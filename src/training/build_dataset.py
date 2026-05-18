@@ -87,7 +87,7 @@ async def main(years: list[int], out_dir: Path) -> None:
     logger.info("Adding %d quiet (null) days for negative examples", len(null_days))
 
     # Process tornado days
-    sem = asyncio.Semaphore(20)  # 20 concurrent days for datacenter/fast connection
+    sem = asyncio.Semaphore(8)   # 8 concurrent days — S3 rate limit safe
     async def bounded(date, rpts, label):
         async with sem:
             return await process_day(date, rpts, out_dir, label)
