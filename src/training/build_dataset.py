@@ -44,19 +44,29 @@ async def process_day(
         logger.info("Skipping %s (already exists)", tag)
         return True
 
-    logger.info("Processing %s …", tag)
-    result = await sample_day(date, reports)
+    logger.info("Processing %s ...", tag)
+    try:
+        result = await sample_day(date, reports)
+    except Exception as exc:
+        logger.error("EXCEPTION in sample_day for %s: %s", tag, exc, exc_info=True)
+        return False
+
     if result is None:
         logger.warning("No data for %s", tag)
         return False
 
     feats, labels = result
-    df = pd.DataFrame(feats, columns=FEATURE_COLS)
-    df["label"] = labels.astype(np.int8)
-    df["date"]  = date.strftime("%Y-%m-%d")
-    df.to_parquet(path, index=False, compression="snappy")
+    try:
+        df = pd.DataFrame(feats, columns=FEATURE_COLS)
+        df["label"] = labels.astype(np.int8)
+        df["date"]  = date.strftime("%Y-%m-%d")
+        df.to_parquet(path, index=False, compression="snappy")
+    except Exception as exc:
+        logger.error("EXCEPTION writing shard for %s: %s", tag, exc, exc_info=True)
+        return False
+
     n_pos = int(labels.sum())
-    logger.info("  Wrote %s — %d rows (%d positive)", path.name, len(df), n_pos)
+    logger.info("  Wrote %s - %d rows (%d positive)", path.name, len(df), n_pos)
     return True
 
 
