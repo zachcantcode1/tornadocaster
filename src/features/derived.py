@@ -11,6 +11,15 @@ def _dx_dy(a: xr.DataArray) -> tuple[xr.DataArray, xr.DataArray]:
     return xr.DataArray(dx, coords=a.coords, dims=a.dims), xr.DataArray(dy, coords=a.coords, dims=a.dims)
 
 
+def _mixing_ratio(dpt_k: xr.DataArray, pressure_hpa: float) -> xr.DataArray:
+    """Approximation of mixing ratio (g/kg) from dewpoint (K) and pressure (hPa)."""
+    td_c = xr.where(dpt_k > 173.15, dpt_k, 173.15) - 273.15  # clamp to -100°C min
+    td_c = xr.where(td_c < 60.0, td_c, 60.0)  # clamp to 60°C max
+    e = 6.112 * xr.apply_ufunc(np.exp, 17.67 * td_c / (td_c + 243.5))
+    e = xr.where(e < pressure_hpa * 0.99, e, pressure_hpa * 0.99)  # avoid divide-by-zero
+    return 622.0 * e / (pressure_hpa - e)
+
+
 def build_first_pass_derived_fields(
     fields: dict[str, xr.DataArray],
 ) -> dict[str, xr.DataArray]:
@@ -135,5 +144,73 @@ def build_first_pass_derived_fields(
         out["calc_conv_only_925"] = xr.where(out["calc_div_925"] < 0, -out["calc_div_925"], 0)
     if "calc_div_850" in out:
         out["calc_conv_only_850"] = xr.where(out["calc_div_850"] < 0, -out["calc_div_850"], 0)
+
+    # --- Triple / quad compound features ---
+
+    # CAPE × HLCY × CIN
+    if cape_sfc is not None and hlcy is not None and cin_sfc is not None:
+        cin_term_sfc = 200.0 + cin_sfc
+        out["calc_sbcape_hlcy_cin"] = out["calc_sbcape_hlcy"] * cin_term_sfc
+        out["calc_sqrt_sbcape_hlcy_cin"] = out["calc_sqrt_sbcape_hlcy"] * cin_term_sfc
+    if cape_ml is not None and hlcy is not None and cin_ml is not None:
+        cin_term_ml = 200.0 + cin_ml
+        out["calc_mlcape_hlcy_cin"] = out["calc_mlcape_hlcy"] * cin_term_ml
+        out["calc_sqrt_mlcape_hlcy_cin"] = out["calc_sqrt_mlcape_hlcy"] * cin_term_ml
+
+    # CAPE × BWD × HLCY
+    if "calc_sbcape_bwd" in out and hlcy is not None:
+        out["calc_sbcape_bwd_hlcy"] = out["calc_sbcape_bwd"] * hlcy
+        out["calc_sqrt_sbcape_bwd_hlcy"] = out["calc_sqrt_sbcape_bwd"] * hlcy
+    if "calc_mlcape_bwd" in out and hlcy is not None:
+        out["calc_mlcape_bwd_hlcy"] = out["calc_mlcape_bwd"] * hlcy
+        out["calc_sqrt_mlcape_bwd_hlcy"] = out["calc_sqrt_mlcape_bwd"] * hlcy
+
+    # CAPE × BWD × HLCY × CIN
+    if "calc_sbcape_bwd_hlcy" in out and cin_sfc is not None:
+        out["calc_sbcape_bwd_hlcy_cin"] = out["calc_sbcape_bwd_hlcy"] * (200.0 + cin_sfc)
+        out["calc_sqrt_sbcape_bwd_hlcy_cin"] = out["calc_sqrt_sbcape_bwd_hlcy"] * (200.0 + cin_sfc)
+    if "calc_mlcape_bwd_hlcy" in out and cin_ml is not None:
+        out["calc_mlcape_bwd_hlcy_cin"] = out["calc_mlcape_bwd_hlcy"] * (200.0 + cin_ml)
+        out["calc_sqrt_mlcape_bwd_hlcy_cin"] = out["calc_sqrt_mlcape_bwd_hlcy"] * (200.0 + cin_ml)
+
+    # Lapse rate × BWD and lapse rate × cold-500mb × BWD
+    if "calc_700_500_lapse" in out and vwsh is not None:
+        out["calc_lapse_bwd"] = out["calc_700_500_lapse"] * vwsh
+        if tmp_500 is not None:
+            cold500 = 273.15 - tmp_500  # -(Celsius at 500mb)
+            out["calc_lapse_cold500_bwd"] = out["calc_700_500_lapse"] * cold500 * vwsh
+
+    # MUCAPE compound features (MUCAPE = cape_mu in our naming)
+    if cape_mu is not None and vwsh is not None:
+        out["calc_mucape_bwd"] = cape_mu * vwsh
+        if "calc_700_500_lapse" in out:
+            out["calc_mucape_lapse_bwd"] = cape_mu * out["calc_700_500_lapse"] * vwsh
+            if tmp_500 is not None:
+                cold500 = 273.15 - tmp_500
+                out["calc_mucape_lapse_cold500_bwd"] = cape_mu * out["calc_700_500_lapse"] * cold500 * vwsh
+                dpt_925 = fields.get("dpt_925")
+                dpt_850 = fields.get("dpt_850")
+                if dpt_925 is not None:
+                    mixr925 = _mixing_ratio(dpt_925, 925.0)
+                    out["calc_mucape_mixr925_lapse_cold500_bwd"] = (
+                        cape_mu * mixr925 * out["calc_700_500_lapse"] * cold500 * vwsh
+                    )
+                if dpt_850 is not None:
+                    mixr850 = _mixing_ratio(dpt_850, 850.0)
+                    out["calc_mucape_mixr850_lapse_cold500_bwd"] = (
+                        cape_mu * mixr850 * out["calc_700_500_lapse"] * cold500 * vwsh
+                    )
+
+    # SCP binary threshold
+    if "calc_scpish_rm" in out:
+        out["calc_scpish_gt1"] = xr.where(out["calc_scpish_rm"] > 1.0, 1.0, 0.0)
+
+    # Storm-relative mid-level wind components (mean of storm motion and 500mb wind)
+    ugrd_500 = fields.get("ugrd_500")
+    vgrd_500 = fields.get("vgrd_500")
+    if "calc_ustm" in out and ugrd_500 is not None:
+        out["calc_ustm_500_mean"] = 0.5 * (out["calc_ustm"] + ugrd_500)
+    if "calc_vstm" in out and vgrd_500 is not None:
+        out["calc_vstm_500_mean"] = 0.5 * (out["calc_vstm"] + vgrd_500)
 
     return out

@@ -17,43 +17,45 @@ RADIUS_25MI_13KM_GRID = 3
 RADIUS_50MI_13KM_GRID = 6
 RADIUS_100MI_13KM_GRID = 12
 
+def _needs_chunking(data_array: xr.DataArray, tile_size: int) -> bool:
+    """Return True only when the array is large enough that chunking saves memory."""
+    return any(s > tile_size * 2 for s in data_array.shape)
+
+
 def calculate_spatial_gradient(data_array: xr.DataArray, tile_size: int = 500) -> xr.DataArray:
     """
     Computes a simple spatial gradient magnitude for a 2D data array.
-    Uses dask to chunk the data spatially.
-    
+    Uses dask chunking only when the array exceeds the tile size threshold;
+    otherwise falls back to in-memory numpy operations to avoid dask overhead.
+
     Gradient Magnitude = sqrt((d/dx)^2 + (d/dy)^2)
     """
-    # Chunk the data spatially to avoid OOM crashes
-    # Assuming dimensions are (y, x)
     dims = data_array.dims
-    if 'y' in dims and 'x' in dims:
-        da_chunked = data_array.chunk({"y": tile_size, "x": tile_size})
+    base_name = data_array.name or "feature"
+
+    if _needs_chunking(data_array, tile_size):
+        if 'y' in dims and 'x' in dims:
+            da_chunked = data_array.chunk({"y": tile_size, "x": tile_size})
+        else:
+            da_chunked = data_array.chunk({dims[0]: tile_size, dims[1]: tile_size})
+        dy, dx = da.gradient(da_chunked.data, axis=(0, 1))
+        gradient_magnitude = da.sqrt(dy**2 + dx**2)
+        return xr.DataArray(
+            gradient_magnitude,
+            coords=data_array.coords,
+            dims=data_array.dims,
+            name=f"{base_name}_gradient",
+        )
     else:
-        # Fallback if dims are named differently
-        da_chunked = data_array.chunk({dims[0]: tile_size, dims[1]: tile_size})
-        
-    # Calculate gradients using differentiate (central differences)
-    # xarray.differentiate() operates on coordinates, but if coordinates 
-    # are missing or non-uniform, we can use dask/numpy gradient on the raw array.
-    # For robust tiled processing, we'll use dask.array.gradient directly.
-    
-    # We must ensure overlapping to avoid boundary artifacts if using dask map_overlap
-    # But dask.array.gradient handles internal boundaries correctly.
-    
-    y_axis, x_axis = 0, 1 # Assuming 2D (y, x) shape
-    
-    dy, dx = da.gradient(da_chunked.data, axis=(y_axis, x_axis))
-    
-    gradient_magnitude = da.sqrt(dy**2 + dx**2)
-    
-    # Re-wrap in xarray using same coords and dims
-    return xr.DataArray(
-        gradient_magnitude,
-        coords=data_array.coords,
-        dims=data_array.dims,
-        name=f"{data_array.name}_gradient" if data_array.name else "gradient"
-    )
+        vals = np.asarray(data_array.values, dtype=np.float32)
+        dy, dx = np.gradient(vals, axis=(0, 1))
+        gradient_magnitude = np.sqrt(dy**2 + dx**2)
+        return xr.DataArray(
+            gradient_magnitude,
+            coords=data_array.coords,
+            dims=data_array.dims,
+            name=f"{base_name}_gradient",
+        )
 
 
 def calculate_spatial_gradients_xy(
@@ -61,45 +63,53 @@ def calculate_spatial_gradients_xy(
 ) -> tuple[xr.DataArray, xr.DataArray, xr.DataArray]:
     """
     Computes directional gradients in x and y plus gradient magnitude.
-    Returns (dx, dy, magnitude) as lazily-evaluated DataArrays.
+    Uses dask only when the array exceeds the tile size threshold.
     """
     dims = data_array.dims
-    if "y" in dims and "x" in dims:
-        da_chunked = data_array.chunk({"y": tile_size, "x": tile_size})
-    else:
-        da_chunked = data_array.chunk({dims[0]: tile_size, dims[1]: tile_size})
-
-    dy, dx = da.gradient(da_chunked.data, axis=(0, 1))
-    grad_mag = da.sqrt(dy**2 + dx**2)
-
     base_name = data_array.name or "feature"
-    dx_da = xr.DataArray(dx, coords=data_array.coords, dims=data_array.dims, name=f"{base_name}_grad_x")
-    dy_da = xr.DataArray(dy, coords=data_array.coords, dims=data_array.dims, name=f"{base_name}_grad_y")
-    mag_da = xr.DataArray(
-        grad_mag,
-        coords=data_array.coords,
-        dims=data_array.dims,
-        name=f"{base_name}_grad_mag",
-    )
+
+    if _needs_chunking(data_array, tile_size):
+        if "y" in dims and "x" in dims:
+            da_chunked = data_array.chunk({"y": tile_size, "x": tile_size})
+        else:
+            da_chunked = data_array.chunk({dims[0]: tile_size, dims[1]: tile_size})
+        dy, dx = da.gradient(da_chunked.data, axis=(0, 1))
+        grad_mag = da.sqrt(dy**2 + dx**2)
+        dx_da = xr.DataArray(dx, coords=data_array.coords, dims=data_array.dims, name=f"{base_name}_grad_x")
+        dy_da = xr.DataArray(dy, coords=data_array.coords, dims=data_array.dims, name=f"{base_name}_grad_y")
+        mag_da = xr.DataArray(grad_mag, coords=data_array.coords, dims=data_array.dims, name=f"{base_name}_grad_mag")
+    else:
+        vals = np.asarray(data_array.values, dtype=np.float32)
+        dy_np, dx_np = np.gradient(vals, axis=(0, 1))
+        grad_mag_np = np.sqrt(dy_np**2 + dx_np**2)
+        dx_da = xr.DataArray(dx_np, coords=data_array.coords, dims=data_array.dims, name=f"{base_name}_grad_x")
+        dy_da = xr.DataArray(dy_np, coords=data_array.coords, dims=data_array.dims, name=f"{base_name}_grad_y")
+        mag_da = xr.DataArray(grad_mag_np, coords=data_array.coords, dims=data_array.dims, name=f"{base_name}_grad_mag")
+
     return dx_da, dy_da, mag_da
 
 def calculate_spatial_mean(data_array: xr.DataArray, radius: int = 1, tile_size: int = 500) -> xr.DataArray:
     """
     Computes a spatial rolling mean over a given radius (e.g. 1 means 3x3 window).
+    Uses dask chunking only when the array exceeds the tile size threshold.
     """
     dims = data_array.dims
-    if 'y' in dims and 'x' in dims:
-        da_chunked = data_array.chunk({"y": tile_size, "x": tile_size})
-        
-        # xarray's rolling operates sequentially and supports dask.
-        # min_periods=1 ensures edge pixels are still computed
-        rolled = da_chunked.rolling(y=radius*2+1, center=True, min_periods=1).mean()
-        mean_array = rolled.rolling(x=radius*2+1, center=True, min_periods=1).mean()
-        
-        mean_array.name = f"{data_array.name}_mean_r{radius}" if data_array.name else f"mean_r{radius}"
-        return mean_array
-    else:
+    if 'y' not in dims or 'x' not in dims:
         raise ValueError("DataArray must have 'y' and 'x' dimensions for 2D rolling operations.")
+
+    window = radius * 2 + 1
+    name = f"{data_array.name}_mean_r{radius}" if data_array.name else f"mean_r{radius}"
+
+    if _needs_chunking(data_array, tile_size):
+        da_chunked = data_array.chunk({"y": tile_size, "x": tile_size})
+        rolled = da_chunked.rolling(y=window, center=True, min_periods=1).mean()
+        mean_array = rolled.rolling(x=window, center=True, min_periods=1).mean()
+    else:
+        rolled = data_array.rolling(y=window, center=True, min_periods=1).mean()
+        mean_array = rolled.rolling(x=window, center=True, min_periods=1).mean()
+
+    mean_array.name = name
+    return mean_array
 
 def generate_legacy_feature_blocks(data_array: xr.DataArray, tile_size: int = 500) -> dict:
     """

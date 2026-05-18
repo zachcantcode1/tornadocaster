@@ -5,3 +5,6 @@ eccodes>=1.6.0
 lightgbm>=4.0.0
 openai>=1.0.0
 memory_profiler>=0.61.0
+dask>=2024.0
+matplotlib>=3.7.0
+pytest-asyncio>=0.23.0

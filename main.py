@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import json
+from datetime import datetime, timedelta, timezone
 from src.ingestion.noaa_fetcher import NOAAIndexFetcher
 from src.features.spatial import generate_legacy_feature_blocks, generate_legacy_feature_blocks_for_fields
 from src.features.derived import build_first_pass_derived_fields
@@ -24,70 +25,135 @@ import os
 logger = logging.getLogger(__name__)
 
 FIRST_PASS_FIELD_CATALOG = [
+    # Instability
     ("cape_surface", "CAPE", "surface", "CAPE:surface:hour fcst:wt ens mean"),
     ("cape_ml", "CAPE", "90-0 mb above ground", "CAPE:90-0 mb above ground:hour fcst:wt ens mean"),
     ("cape_mu", "CAPE", "180-0 mb above ground", "CAPE:180-0 mb above ground:hour fcst:wt ens mean"),
     ("cin_surface", "CIN", "surface", "CIN:surface:hour fcst:wt ens mean"),
     ("cin_ml", "CIN", "90-0 mb above ground", "CIN:90-0 mb above ground:hour fcst:wt ens mean"),
     ("cin_mu", "CIN", "180-0 mb above ground", "CIN:180-0 mb above ground:hour fcst:wt ens mean"),
+    # Shear / rotation
     ("hlcy_3km", "HLCY", "3000-0 m above ground", "HLCY:3000-0 m above ground:hour fcst:wt ens mean"),
-    ("hgt_500", "HGT", "500 mb", "HGT:500 mb:hour fcst:wt ens mean"),
+    ("vwsh_0_6km", "VWSH", "6000-0 m above ground", "VWSH:6000-0 m above ground:hour fcst:wt ens mean"),
+    ("vwsh_surface", "VWSH", "surface", "VWSH:surface:hour fcst:wt ens mean"),
+    # Geopotential heights
     ("hgt_250", "HGT", "250 mb", "HGT:250 mb:hour fcst:wt ens mean"),
+    ("hgt_500", "HGT", "500 mb", "HGT:500 mb:hour fcst:wt ens mean"),
     ("hgt_700", "HGT", "700 mb", "HGT:700 mb:hour fcst:wt ens mean"),
     ("hgt_850", "HGT", "850 mb", "HGT:850 mb:hour fcst:wt ens mean"),
     ("hgt_925", "HGT", "925 mb", "HGT:925 mb:hour fcst:wt ens mean"),
-    ("ugrd_500", "UGRD", "500 mb", "UGRD:500 mb:hour fcst:wt ens mean"),
+    ("hgt_cloud_base", "HGT", "cloud base", "HGT:cloud base:hour fcst:wt ens mean"),
+    ("hgt_cloud_ceiling", "HGT", "cloud ceiling", "HGT:cloud ceiling:hour fcst:wt ens mean"),
+    # U-component winds
     ("ugrd_250", "UGRD", "250 mb", "UGRD:250 mb:hour fcst:wt ens mean"),
+    ("ugrd_500", "UGRD", "500 mb", "UGRD:500 mb:hour fcst:wt ens mean"),
     ("ugrd_700", "UGRD", "700 mb", "UGRD:700 mb:hour fcst:wt ens mean"),
     ("ugrd_850", "UGRD", "850 mb", "UGRD:850 mb:hour fcst:wt ens mean"),
     ("ugrd_925", "UGRD", "925 mb", "UGRD:925 mb:hour fcst:wt ens mean"),
-    ("vgrd_500", "VGRD", "500 mb", "VGRD:500 mb:hour fcst:wt ens mean"),
+    # V-component winds
     ("vgrd_250", "VGRD", "250 mb", "VGRD:250 mb:hour fcst:wt ens mean"),
+    ("vgrd_500", "VGRD", "500 mb", "VGRD:500 mb:hour fcst:wt ens mean"),
     ("vgrd_700", "VGRD", "700 mb", "VGRD:700 mb:hour fcst:wt ens mean"),
     ("vgrd_850", "VGRD", "850 mb", "VGRD:850 mb:hour fcst:wt ens mean"),
     ("vgrd_925", "VGRD", "925 mb", "VGRD:925 mb:hour fcst:wt ens mean"),
+    # Wind speed
+    ("wind_10m", "WIND", "10 m above ground", "WIND:10 m above ground:hour fcst:wt ens mean"),
+    ("wind_80m", "WIND", "80 m above ground", "WIND:80 m above ground:hour fcst:wt ens mean"),
+    ("wind_250", "WIND", "250 mb", "WIND:250 mb:hour fcst:wt ens mean"),
+    ("wind_850", "WIND", "850 mb", "WIND:850 mb:hour fcst:wt ens mean"),
+    ("wind_925", "WIND", "925 mb", "WIND:925 mb:hour fcst:wt ens mean"),
+    # Temperature
     ("tmp_2m", "TMP", "2 m above ground", "TMP:2 m above ground:hour fcst:wt ens mean"),
+    ("tmp_250", "TMP", "250 mb", "TMP:250 mb:hour fcst:wt ens mean"),
     ("tmp_500", "TMP", "500 mb", "TMP:500 mb:hour fcst:wt ens mean"),
     ("tmp_700", "TMP", "700 mb", "TMP:700 mb:hour fcst:wt ens mean"),
     ("tmp_850", "TMP", "850 mb", "TMP:850 mb:hour fcst:wt ens mean"),
     ("tmp_925", "TMP", "925 mb", "TMP:925 mb:hour fcst:wt ens mean"),
+    # Dewpoint
     ("dpt_2m", "DPT", "2 m above ground", "DPT:2 m above ground:hour fcst:wt ens mean"),
+    ("dpt_500", "DPT", "500 mb", "DPT:500 mb:hour fcst:wt ens mean"),
+    ("dpt_700", "DPT", "700 mb", "DPT:700 mb:hour fcst:wt ens mean"),
     ("dpt_850", "DPT", "850 mb", "DPT:850 mb:hour fcst:wt ens mean"),
     ("dpt_925", "DPT", "925 mb", "DPT:925 mb:hour fcst:wt ens mean"),
+    # Vertical motion
+    ("vvel_700", "VVEL", "700 mb", "VVEL:700 mb:hour fcst:wt ens mean"),
+    ("vvel_700_500", "VVEL", "700-500 mb", "VVEL:700-500 mb:hour fcst:wt ens mean"),
+    # Moisture / precip / clouds
     ("rh_700", "RH", "700 mb", "RH:700 mb:hour fcst:wt ens mean"),
     ("pwat", "PWAT", "entire atmosphere", "PWAT:entire atmosphere:hour fcst:wt ens mean"),
     ("vis_surface", "VIS", "surface", "VIS:surface:hour fcst:wt ens mean"),
     ("crain_surface", "CRAIN", "surface", "CRAIN:surface:hour fcst:wt ens mean"),
-    ("wind_10m", "WIND", "10 m above ground", "WIND:10 m above ground:hour fcst:wt ens mean"),
-    ("wind_80m", "WIND", "80 m above ground", "WIND:80 m above ground:hour fcst:wt ens mean"),
-    ("wind_850", "WIND", "850 mb", "WIND:850 mb:hour fcst:wt ens mean"),
-    ("wind_925", "WIND", "925 mb", "WIND:925 mb:hour fcst:wt ens mean"),
-    ("vwsh_0_6km", "VWSH", "6000-0 m above ground", "VWSH:6000-0 m above ground:hour fcst:wt ens mean"),
+    ("cfrzr_surface", "CFRZR", "surface", "CFRZR:surface:hour fcst:wt ens mean"),
+    ("cicep_surface", "CICEP", "surface", "CICEP:surface:hour fcst:wt ens mean"),
+    ("csnow_surface", "CSNOW", "surface", "CSNOW:surface:hour fcst:wt ens mean"),
+    ("lcdc", "LCDC", "low cloud layer", "LCDC:low cloud layer:hour fcst:wt ens mean"),
+    ("mcdc", "MCDC", "middle cloud layer", "MCDC:middle cloud layer:hour fcst:wt ens mean"),
+    ("hcdc", "HCDC", "high cloud layer", "HCDC:high cloud layer:hour fcst:wt ens mean"),
+    ("tcdc", "TCDC", "entire atmosphere", "TCDC:entire atmosphere:hour fcst:wt ens mean"),
+    # Soil
+    ("soilw_0_10cm", "SOILW", "0-0.1 m below ground", "SOILW:0-0.1 m below ground:hour fcst:wt ens mean"),
+    ("tsoil_0_10cm", "TSOIL", "0-0.1 m below ground", "TSOIL:0-0.1 m below ground:hour fcst:wt ens mean"),
+    # Other
     ("hindex_surface", "HINDEX", "surface", "HINDEX:surface:hour fcst:wt ens mean"),
 ]
 
 FIRST_PASS_DERIVED_LEGACY_BASE = {
+    # Lapse rates
     "calc_700_500_lapse": "700-500mbLapseRate:calculated:hour fcst:",
     "calc_925_700_lapse": "925-700mbLapseRate:calculated:hour fcst:",
+    # Wind magnitudes
     "calc_wind_700": "Wind700mb:calculated:hour fcst:",
     "calc_wind_500": "Wind500mb:calculated:hour fcst:",
+    # CAPE × HLCY products
     "calc_sbcape_hlcy": "SBCAPE*HLCY3000-0m:calculated:hour fcst:",
     "calc_mlcape_hlcy": "MLCAPE*HLCY3000-0m:calculated:hour fcst:",
     "calc_sqrt_sbcape_hlcy": "sqrtSBCAPE*HLCY3000-0m:calculated:hour fcst:",
     "calc_sqrt_mlcape_hlcy": "sqrtMLCAPE*HLCY3000-0m:calculated:hour fcst:",
+    # CAPE × BWD products
     "calc_sbcape_bwd": "SBCAPE*BWD0-6km:calculated:hour fcst:",
     "calc_mlcape_bwd": "MLCAPE*BWD0-6km:calculated:hour fcst:",
     "calc_sqrt_sbcape_bwd": "sqrtSBCAPE*BWD0-6km:calculated:hour fcst:",
     "calc_sqrt_mlcape_bwd": "sqrtMLCAPE*BWD0-6km:calculated:hour fcst:",
+    # CAPE × CIN products
     "calc_sbcape_200_plus_sbcin": "SBCAPE*(200+SBCIN):calculated:hour fcst:",
     "calc_mlcape_200_plus_mlcin": "MLCAPE*(200+MLCIN):calculated:hour fcst:",
     "calc_sqrt_sbcape_200_plus_sbcin": "sqrtSBCAPE*(200+SBCIN):calculated:hour fcst:",
     "calc_sqrt_mlcape_200_plus_mlcin": "sqrtMLCAPE*(200+MLCIN):calculated:hour fcst:",
+    # CAPE × HLCY × CIN triple products
+    "calc_sbcape_hlcy_cin": "SBCAPE*HLCY3000-0m*(200+SBCIN):calculated:hour fcst:",
+    "calc_mlcape_hlcy_cin": "MLCAPE*HLCY3000-0m*(200+MLCIN):calculated:hour fcst:",
+    "calc_sqrt_sbcape_hlcy_cin": "sqrtSBCAPE*HLCY3000-0m*(200+SBCIN):calculated:hour fcst:",
+    "calc_sqrt_mlcape_hlcy_cin": "sqrtMLCAPE*HLCY3000-0m*(200+MLCIN):calculated:hour fcst:",
+    # CAPE × BWD × HLCY triple products
+    "calc_sbcape_bwd_hlcy": "SBCAPE*BWD0-6km*HLCY3000-0m:calculated:hour fcst:",
+    "calc_mlcape_bwd_hlcy": "MLCAPE*BWD0-6km*HLCY3000-0m:calculated:hour fcst:",
+    "calc_sqrt_sbcape_bwd_hlcy": "sqrtSBCAPE*BWD0-6km*HLCY3000-0m:calculated:hour fcst:",
+    "calc_sqrt_mlcape_bwd_hlcy": "sqrtMLCAPE*BWD0-6km*HLCY3000-0m:calculated:hour fcst:",
+    # CAPE × BWD × HLCY × CIN quad products
+    "calc_sbcape_bwd_hlcy_cin": "SBCAPE*BWD0-6km*HLCY3000-0m*(200+SBCIN):calculated:hour fcst:",
+    "calc_mlcape_bwd_hlcy_cin": "MLCAPE*BWD0-6km*HLCY3000-0m*(200+MLCIN):calculated:hour fcst:",
+    "calc_sqrt_sbcape_bwd_hlcy_cin": "sqrtSBCAPE*BWD0-6km*HLCY3000-0m*(200+SBCIN):calculated:hour fcst:",
+    "calc_sqrt_mlcape_bwd_hlcy_cin": "sqrtMLCAPE*BWD0-6km*HLCY3000-0m*(200+MLCIN):calculated:hour fcst:",
+    # Lapse rate compound products
+    "calc_lapse_bwd": "700-500mbLapseRate*BWD0-6km:calculated:hour fcst:",
+    "calc_lapse_cold500_bwd": "700-500mbLapseRate*-Celcius500mb*BWD0-6km:calculated:hour fcst:",
+    # MUCAPE compound products
+    "calc_mucape_bwd": "MUCAPE*BWD0-6km:calculated:hour fcst:",
+    "calc_mucape_lapse_bwd": "MUCAPE*700-500mbLapseRate*BWD0-6km:calculated:hour fcst:",
+    "calc_mucape_lapse_cold500_bwd": "MUCAPE*700-500mbLapseRate*-Celcius500mb*BWD0-6km:calculated:hour fcst:",
+    "calc_mucape_mixr925_lapse_cold500_bwd": "MUCAPE*MixingRatio925mb*700-500mbLapseRate*-Celcius500mb*BWD0-6km:calculated:hour fcst:",
+    "calc_mucape_mixr850_lapse_cold500_bwd": "MUCAPE*MixingRatio850mb*700-500mbLapseRate*-Celcius500mb*BWD0-6km:calculated:hour fcst:",
+    # SCP and derived storm-motion
     "calc_scpish_rm": "SCPish(RM):calculated:hour fcst:",
+    "calc_scpish_gt1": "SCPish(RM)>1:calculated:hour fcst:",
+    "calc_ustm_500_mean": "U½STM½500mb:calculated:hour fcst:",
+    "calc_vstm_500_mean": "V½STM½500mb:calculated:hour fcst:",
+    # Wind extremes
     "calc_max_wind_le_850": "MaxWind<=850mb:calculated:hour fcst:",
     "calc_sum_wind_le_850": "SumWind<=850mb:calculated:hour fcst:",
     "calc_max_wind_le_700": "MaxWind<=700mb:calculated:hour fcst:",
     "calc_sum_wind_le_700": "SumWind<=700mb:calculated:hour fcst:",
+    # Mean and shear components
     "calc_umean": "UMEAN:calculated:hour fcst:",
     "calc_vmean": "VMEAN:calculated:hour fcst:",
     "calc_ushear": "USHEAR:calculated:hour fcst:",
@@ -95,6 +161,7 @@ FIRST_PASS_DERIVED_LEGACY_BASE = {
     "calc_shear": "SHEAR:calculated:hour fcst:",
     "calc_ustm": "USTM:calculated:hour fcst:",
     "calc_vstm": "VSTM:calculated:hour fcst:",
+    # Divergence and vorticity
     "calc_div_925": "Divergence925mb*10^5:calculated:hour fcst:",
     "calc_div_850": "Divergence850mb*10^5:calculated:hour fcst:",
     "calc_div_250": "Divergence250mb*10^5:calculated:hour fcst:",
@@ -107,6 +174,115 @@ FIRST_PASS_DERIVED_LEGACY_BASE = {
     "calc_abs_vort_500": "AbsVorticity500mb*10^5:calculated:hour fcst:",
     "calc_abs_vort_250": "AbsVorticity250mb*10^5:calculated:hour fcst:",
 }
+
+HRRR_S3_BASE = "https://noaa-hrrr-bdp-pds.s3.amazonaws.com"
+RRFS_S3_BASE = "https://noaa-rrfs-pds.s3.amazonaws.com"
+
+# RRFS-A field catalog.  Tuple layout: (internal_name, grib_variable, grib_level).
+# RRFS uses height-AGL / special-level descriptors rather than pressure levels for
+# most convective parameters — see rrfs.tHHz.2dfld.2p5km.fFFF.hi.grib2 .idx layout.
+RRFS_FIELD_CATALOG = [
+    # Instability
+    ("cape_surface", "CAPE", "surface"),
+    ("cape_ml",      "CAPE", "90-0 mb above ground"),
+    ("cape_mu",      "CAPE", "180-0 mb above ground"),
+    ("cape_deep_ml", "CAPE", "255-0 mb above ground"),
+    ("cin_surface",  "CIN",  "surface"),
+    ("cin_ml",       "CIN",  "90-0 mb above ground"),
+    ("cin_mu",       "CIN",  "180-0 mb above ground"),
+    # Shear / rotation (SRH available at two depths)
+    ("hlcy_3km", "HLCY", "3000-0 m above ground"),
+    ("hlcy_1km", "HLCY", "1000-0 m above ground"),
+    # LCL height and pressure — direct model output, no T2m/Td2m approximation
+    ("hgt_lcl",  "HGT",  "level of adiabatic condensation from sfc"),
+    ("pres_lcl", "PRES", "level of adiabatic condensation from sfc"),
+    # Composite / derived parameters computed in-model
+    ("efhl_surface",  "EFHL",   "surface"),                   # effective helicity
+    ("cangle_500m",   "CANGLE", "0-500 m above ground"),      # critical angle
+    ("dcape_400mb",   "DCAPE",  "400-0 mb above ground"),     # downdraft CAPE
+    # Max updraft helicity — key supercell / tornado indicator
+    ("mxuphl_03km", "MXUPHL", "3000-0 m above ground"),
+    ("mxuphl_25km", "MXUPHL", "5000-2000 m above ground"),
+    # Min updraft helicity (negative rotation tracking)
+    ("mnuphl_03km", "MNUPHL", "3000-0 m above ground"),
+    # Low-level relative vorticity
+    ("relv_2km", "RELV", "2000-0 m above ground"),
+    ("relv_1km", "RELV", "1000-0 m above ground"),
+    # Surface / near-surface
+    ("tmp_2m",        "TMP",   "2 m above ground"),
+    ("dpt_2m",        "DPT",   "2 m above ground"),
+    ("gust_surface",  "GUST",  "surface"),
+    ("hpbl_surface",  "HPBL",  "surface"),    # PBL height
+    ("vis_surface",   "VIS",   "surface"),
+    # Winds for 0-1km shear proxy (10 m vs PBL)
+    ("ugrd_10m",  "UGRD", "10 m above ground"),
+    ("vgrd_10m",  "VGRD", "10 m above ground"),
+    ("ugrd_80m",  "UGRD", "80 m above ground"),
+    ("vgrd_80m",  "VGRD", "80 m above ground"),
+    ("ugrd_pbl",  "UGRD", "planetary boundary layer"),
+    ("vgrd_pbl",  "VGRD", "planetary boundary layer"),
+    # Misc
+    ("hail_surface",  "HAIL",   "surface"),
+    ("refc_atm",      "REFC",   "entire atmosphere (considered as a single layer)"),
+]
+
+
+def build_hrrr_url(date: str, cycle: int, fhour: int = 1) -> str:
+    return (
+        f"{HRRR_S3_BASE}/hrrr.{date}/conus/"
+        f"hrrr.t{cycle:02d}z.wrfsfcf{fhour:02d}.grib2"
+    )
+
+
+def build_rrfs_url(date: str, cycle: int, fhour: int = 1) -> str:
+    """Return the S3 URL for a RRFS-A CONUS 2D-field forecast file.
+
+    Args:
+        date:  YYYYMMDD string
+        cycle: model cycle hour (0-23)
+        fhour: forecast hour (0-18 for hourly cycles)
+    """
+    return (
+        f"{RRFS_S3_BASE}/rrfs_a/rrfs.{date}/{cycle:02d}/"
+        f"rrfs.t{cycle:02d}z.2dfld.3km.f{fhour:03d}.conus.grib2"
+    )
+
+
+async def resolve_latest_hrrr_url(fetcher: "NOAAIndexFetcher", fhour: int = 1) -> str:
+    """Probe recent HRRR cycles (newest first) and return the first available URL."""
+    now = datetime.now(timezone.utc)
+    for hours_back in range(2, 8):
+        candidate = now - timedelta(hours=hours_back)
+        url = build_hrrr_url(candidate.strftime("%Y%m%d"), candidate.hour, fhour)
+        try:
+            await fetcher.fetch_idx_file(f"{url}.idx")
+            logger.info("Resolved HRRR URL: %s", url)
+            return url
+        except Exception:
+            continue
+    raise RuntimeError("Could not resolve any recent HRRR run after checking 6 cycles.")
+
+
+async def resolve_latest_rrfs_url(fetcher: "NOAAIndexFetcher", fhour: int = 1) -> str:
+    """Probe recent RRFS cycles (newest first) and return the first available URL.
+
+    RRFS runs every hour.  Data typically appears ~60-90 min after cycle time.
+    We step back through the last 6 cycles to find one with an index file.
+    Falls back to HRRR if no RRFS cycle is available.
+    """
+    now = datetime.now(timezone.utc)
+    for hours_back in range(1, 7):
+        candidate = now - timedelta(hours=hours_back)
+        url = build_rrfs_url(candidate.strftime("%Y%m%d"), candidate.hour, fhour)
+        try:
+            await fetcher.fetch_idx_file(f"{url}.idx")
+            logger.info("Resolved RRFS URL: %s", url)
+            return url
+        except Exception:
+            continue
+    logger.warning("No RRFS run found in last 6 hours; falling back to HRRR.")
+    return await resolve_latest_hrrr_url(fetcher, fhour=fhour)
+
 
 def _extract_lat_lon(ds: xr.Dataset, y_idx: int, x_idx: int) -> tuple[float, float]:
     if "latitude" in ds and "longitude" in ds:
@@ -143,28 +319,29 @@ async def run_pipeline(
     window: str = "f13-24",
     inference_backend: str = "auto",  # auto | lightgbm | julia | mock
     coverage_report_path: str = "",
+    base_url: str = "",  # override URL; resolved dynamically when empty
+    fhour: int = 1,      # HRRR forecast hour used when resolving dynamically
 ):
     """
-    Main orchestration daemon loop connecting Ingestion -> Engineering -> Inference -> LLM.
+    Main orchestration pipeline: Ingestion -> Feature Engineering -> Inference -> LLM.
     """
-    logger.info("Starting Tornadocaster Pipeline...")
-    
+    logger.info("Starting Tornadocaster Pipeline (event=%s window=%s)...", event, window)
+
     # === PHASE 1: INGESTION ===
     logger.info("Phase 1: Ingestion")
-    base_url = "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20240516/conus/hrrr.t00z.wrfsfcf01.grib2"
     fetcher = NOAAIndexFetcher()
     temp_path = None
     try:
         if mock_mode:
-            # Generate mock dataset for fast testing
             logger.info("Mock mode enabled. Skipping HTTP download.")
             data = np.random.rand(100, 100).astype(np.float32)
             ds = xr.Dataset({"cape": (("y", "x"), data), "cin": (("y", "x"), -data)})
             fields_for_features = {}
             for i, (field_name, _, _, _) in enumerate(FIRST_PASS_FIELD_CATALOG):
-                # Deterministic perturbations to avoid identical columns.
                 fields_for_features[field_name] = (ds["cape"] * (1.0 + i * 0.01) + (i * 0.001)).astype(np.float32)
         else:
+            if not base_url:
+                base_url = await resolve_latest_hrrr_url(fetcher, fhour=fhour)
             idx_url = f"{base_url}.idx"
             idx_text = await fetcher.fetch_idx_file(idx_url)
             records = fetcher.parse_idx_text(idx_text)
