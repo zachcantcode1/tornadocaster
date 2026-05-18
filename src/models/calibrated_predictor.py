@@ -17,6 +17,8 @@ import numpy as np
 import xarray as xr
 from scipy.ndimage import gaussian_filter
 
+from src.training.climatology import get_climo_freq
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL_PATH = Path(__file__).parent.parent.parent / "models" / "tornado_lgbm.pkl"
@@ -203,6 +205,11 @@ class TornadoProbabilityPredictor:
             "hour_utc":             np.full(original_shape, hour_utc),
             "doy_sin":              np.full(original_shape, doy_sin),
             "doy_cos":              np.full(original_shape, doy_cos),
+            "climo_freq":           get_climo_freq(
+                                        lat_grid.astype(np.float32),
+                                        lon_grid.astype(np.float32),
+                                        valid_dt.month if valid_dt is not None else 5,
+                                    ).astype(np.float32),
         }
 
         import pandas as pd

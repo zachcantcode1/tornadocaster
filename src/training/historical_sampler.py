@@ -21,6 +21,7 @@ from scipy.ndimage import gaussian_filter
 from src.ingestion.noaa_fetcher import NOAAIndexFetcher
 from src.features.derived import build_first_pass_derived_fields
 from src.visualization.plot_forecast import compute_tornado_composite
+from src.training.climatology import get_climo_freq
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +32,8 @@ _HRRR_BASE = "https://noaa-hrrr-bdp-pds.s3.amazonaws.com"
 _LABEL_RADIUS_KM = 40.0
 _LABEL_RADIUS_DEG = _LABEL_RADIUS_KM / 111.0
 
-# 6-hour label window per cycle — tight enough to avoid labeling the whole warm sector,
-# wide enough to give a meaningful base rate for the model to learn from.
-_LABEL_WINDOW_HOURS = 6
+# 4-hour label window per cycle — balanced between base rate and spatial specificity.
+_LABEL_WINDOW_HOURS = 4
 
 # HRRR native grid spacing (~3 km). Used to convert spatial scale → Gaussian sigma in pixels.
 _GRID_KM = 3.0
@@ -55,7 +55,7 @@ HRRR_TRAINING_FIELDS = [
     ("vgrd_850",     "VGRD",  "850 mb"),
 ]
 
-# Feature columns — 18 base + 7 gradients + 9 neighborhood means + 2 lat/lon + 3 temporal = 39
+# Feature columns — 18 base + 7 gradients + 9 neighborhood means + 2 lat/lon + 3 temporal + 1 climo = 40
 FEATURE_COLS = [
     # Base thermodynamic / kinematic fields
     "cape_ml", "cin_ml", "hlcy_3km", "vwsh_0_6km",
@@ -82,6 +82,8 @@ FEATURE_COLS = [
     "hour_utc",
     "doy_sin",
     "doy_cos",
+    # Climatological EF1+ tornado frequency — strongest geographic prior.
+    "climo_freq",
 ]
 
 
@@ -222,6 +224,9 @@ def _extract_features(
         lon_grid, lat_grid = np.meshgrid(lon2d, lat2d)
     N = H * W
 
+    month = valid_start.month if valid_start is not None else 5
+    climo = get_climo_freq(lat_grid.astype(np.float32), lon_grid.astype(np.float32), month).astype(np.float64)
+
     cols = np.stack([
         cape_ml, cin_ml, hlcy_3km, vwsh,
         tmp_2m, dpt_2m, cape_sfc, cape_mu, cin_sfc,
@@ -254,7 +259,9 @@ def _extract_features(
         np.full((H, W), hour_utc),
         np.full((H, W), doy_sin),
         np.full((H, W), doy_cos),
-    ], axis=-1)  # (H, W, 39)
+        # climatological tornado frequency
+        climo,
+    ], axis=-1)  # (H, W, 40)
 
     return cols.reshape(N, len(FEATURE_COLS)).astype(np.float32)
 
