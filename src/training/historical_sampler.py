@@ -309,32 +309,39 @@ async def sample_day(
     Fetch all HRRR cycles for *date*, compute features and labels.
     Returns (features, labels) arrays concatenated across cycles, or None.
     """
-    async def _fetch_one_cycle(cycle: int):
-        result = await _fetch_hrrr_fields(date, cycle, fhour)
-        if result is None:
-            return None
-        fields, lat2d, lon2d = result
-        valid_start = date.replace(hour=cycle, minute=0, second=0, microsecond=0,
-                                   tzinfo=timezone.utc) + timedelta(hours=fhour)
-        valid_end   = valid_start + timedelta(hours=_LABEL_WINDOW_HOURS)
-        feats = _extract_features(fields, lat2d, lon2d, valid_start=valid_start)
-        if feats is None:
-            return None
-        labels = _make_labels(lat2d, lon2d, reports, valid_start, valid_end)
-        pos_idx = np.where(labels == 1)[0]
-        neg_idx = np.where(labels == 0)[0]
-        n_pos   = len(pos_idx)
-        n_neg   = min(len(neg_idx), max(n_pos * 5, 8000))
-        rng     = np.random.default_rng(seed=int(date.timestamp()) + cycle)
-        neg_sampled = rng.choice(neg_idx, size=n_neg, replace=False)
-        keep = np.concatenate([pos_idx, neg_sampled])
-        logger.info("  cycle %02dZ: %d pos / %d neg samples", cycle, n_pos, n_neg)
-        return feats[keep], labels[keep]
+    all_feats  = []
+    all_labels = []
 
-    cycle_results = await asyncio.gather(*[_fetch_one_cycle(c) for c in cycles])
+    for cycle in cycles:
+        try:
+            result = await _fetch_hrrr_fields(date, cycle, fhour)
+            if result is None:
+                logger.debug("  cycle %02dZ: fetch returned None", cycle)
+                continue
+            fields, lat2d, lon2d = result
 
-    all_feats  = [r[0] for r in cycle_results if r is not None]
-    all_labels = [r[1] for r in cycle_results if r is not None]
+            valid_start = date.replace(hour=cycle, minute=0, second=0, microsecond=0,
+                                       tzinfo=timezone.utc) + timedelta(hours=fhour)
+            valid_end   = valid_start + timedelta(hours=_LABEL_WINDOW_HOURS)
+
+            feats = _extract_features(fields, lat2d, lon2d, valid_start=valid_start)
+            if feats is None:
+                logger.warning("  cycle %02dZ: _extract_features returned None", cycle)
+                continue
+
+            labels = _make_labels(lat2d, lon2d, reports, valid_start, valid_end)
+            pos_idx = np.where(labels == 1)[0]
+            neg_idx = np.where(labels == 0)[0]
+            n_pos   = len(pos_idx)
+            n_neg   = min(len(neg_idx), max(n_pos * 5, 8000))
+            rng     = np.random.default_rng(seed=int(date.timestamp()) + cycle)
+            neg_sampled = rng.choice(neg_idx, size=n_neg, replace=False)
+            keep = np.concatenate([pos_idx, neg_sampled])
+            all_feats.append(feats[keep])
+            all_labels.append(labels[keep])
+            logger.info("  cycle %02dZ: %d pos / %d neg samples", cycle, n_pos, n_neg)
+        except Exception as exc:
+            logger.error("  cycle %02dZ EXCEPTION: %s", cycle, exc, exc_info=True)
 
     if not all_feats:
         return None
