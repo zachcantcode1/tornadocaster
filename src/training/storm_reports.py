@@ -109,8 +109,12 @@ def _clean(df: pd.DataFrame, year: int) -> pd.DataFrame:
     return df
 
 
-def load_reports(years: list[int], force: bool = False) -> pd.DataFrame:
-    """Load multiple years of SPC tornado reports into a single DataFrame."""
+def load_reports(years: list[int], force: bool = False, min_ef: int = 1) -> pd.DataFrame:
+    """Load multiple years of SPC tornado reports into a single DataFrame.
+
+    min_ef: minimum EF scale to include (default 1 = EF1+). Use 0 for all tornadoes.
+    Reports with unknown magnitude (mag == -9) are excluded when min_ef > 0.
+    """
     frames = []
     for yr in years:
         try:
@@ -119,7 +123,13 @@ def load_reports(years: list[int], force: bool = False) -> pd.DataFrame:
             logger.warning("Could not load %d storm reports: %s", yr, exc)
     if not frames:
         raise RuntimeError("No storm report data loaded.")
-    return pd.concat(frames, ignore_index=True)
+    df = pd.concat(frames, ignore_index=True)
+    if min_ef > 0:
+        before = len(df)
+        df = df[df["mag"] >= min_ef].reset_index(drop=True)
+        logger.info("EF%d+ filter: %d -> %d reports (dropped %d EF0/unknown)",
+                    min_ef, before, len(df), before - len(df))
+    return df
 
 
 def tornado_days(reports: pd.DataFrame) -> list[datetime]:

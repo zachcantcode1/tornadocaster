@@ -33,6 +33,12 @@ def _grad_mag(arr2d: np.ndarray, scale_km: float) -> np.ndarray:
     return np.hypot(gx, gy).astype(np.float32)
 
 
+def _nbr_mean(arr2d: np.ndarray, scale_km: float) -> np.ndarray:
+    """Neighborhood mean at scale_km — captures background synoptic state."""
+    sigma = scale_km / _GRID_KM
+    return gaussian_filter(arr2d.astype(np.float64), sigma=sigma).astype(np.float32)
+
+
 class TornadoProbabilityPredictor:
     """Wraps a trained LightGBM + isotonic calibration bundle."""
 
@@ -126,45 +132,77 @@ class TornadoProbabilityPredictor:
         tmp_grad_25  = _grad_mag(tmp_2m,   25.0)
         dpt_grad_25  = _grad_mag(dpt_2m,   25.0)
 
+        # ── Neighborhood mean features ───────────────────────────────────────
+        cape_mean_25  = _nbr_mean(cape_ml,  25.0)
+        cape_mean_50  = _nbr_mean(cape_ml,  50.0)
+        cape_mean_100 = _nbr_mean(cape_ml, 100.0)
+        hlcy_mean_25  = _nbr_mean(hlcy_3km, 25.0)
+        hlcy_mean_50  = _nbr_mean(hlcy_3km, 50.0)
+        cin_mean_25   = _nbr_mean(cin_ml,   25.0)
+        tmp_mean_25   = _nbr_mean(tmp_2m,   25.0)
+        dpt_mean_25   = _nbr_mean(dpt_2m,   25.0)
+        vwsh_mean_25  = _nbr_mean(vwsh,     25.0)
+
+        # ── Geographic position ──────────────────────────────────────────────
+        ref_da = next(iter(fields.values()))
+        if "latitude" in ref_da.coords and "longitude" in ref_da.coords:
+            lat_grid = np.asarray(ref_da.coords["latitude"].values,  dtype=np.float32)
+            lon_grid = np.asarray(ref_da.coords["longitude"].values, dtype=np.float32)
+            lon_grid = np.where(lon_grid > 180, lon_grid - 360, lon_grid)
+        else:
+            lat_grid = np.zeros(original_shape, dtype=np.float32)
+            lon_grid = np.zeros(original_shape, dtype=np.float32)
+
         # ── Temporal features ────────────────────────────────────────────────
         if valid_dt is not None:
             hour_utc = float(valid_dt.hour)
             doy      = float(valid_dt.timetuple().tm_yday)
         else:
-            hour_utc = 18.0   # default: peak convective hour
-            doy      = 150.0  # default: mid-May climatology
+            hour_utc = 18.0
+            doy      = 150.0
         doy_sin = np.sin(2.0 * np.pi * doy / 365.0)
         doy_cos = np.cos(2.0 * np.pi * doy / 365.0)
 
         feature_map = {
-            "cape_ml":           cape_ml,
-            "cin_ml":            cin_ml,
-            "hlcy_3km":          hlcy_3km,
-            "vwsh_0_6km":        vwsh,
-            "tmp_2m":            tmp_2m,
-            "dpt_2m":            dpt_2m,
-            "cape_surface":      cape_sfc,
-            "cape_mu":           cape_mu,
-            "cin_surface":       cin_sfc,
-            "ugrd_10m":          ugrd_10m,
-            "vgrd_10m":          vgrd_10m,
-            "bwd_850_sfc":       bwd_850_sfc,
-            "tc_cape_term":      np.clip(cape_ml, 0, None) / 1500.0,
-            "tc_lcl_term":       lcl_term,
-            "tc_cin_term":       cin_term,
-            "tc_srh_term":       srh_term,
-            "tc_bwd_term":       bwd_term,
-            "tc_composite":      tc,
-            "cape_ml_grad_25km": cape_grad_25,
-            "cape_ml_grad_50km": cape_grad_50,
-            "hlcy_3km_grad_25km": hlcy_grad_25,
-            "hlcy_3km_grad_50km": hlcy_grad_50,
-            "cin_ml_grad_25km":  cin_grad_25,
-            "tmp_2m_grad_25km":  tmp_grad_25,
-            "dpt_2m_grad_25km":  dpt_grad_25,
-            "hour_utc":          np.full(original_shape, hour_utc),
-            "doy_sin":           np.full(original_shape, doy_sin),
-            "doy_cos":           np.full(original_shape, doy_cos),
+            "cape_ml":              cape_ml,
+            "cin_ml":               cin_ml,
+            "hlcy_3km":             hlcy_3km,
+            "vwsh_0_6km":           vwsh,
+            "tmp_2m":               tmp_2m,
+            "dpt_2m":               dpt_2m,
+            "cape_surface":         cape_sfc,
+            "cape_mu":              cape_mu,
+            "cin_surface":          cin_sfc,
+            "ugrd_10m":             ugrd_10m,
+            "vgrd_10m":             vgrd_10m,
+            "bwd_850_sfc":          bwd_850_sfc,
+            "tc_cape_term":         np.clip(cape_ml, 0, None) / 1500.0,
+            "tc_lcl_term":          lcl_term,
+            "tc_cin_term":          cin_term,
+            "tc_srh_term":          srh_term,
+            "tc_bwd_term":          bwd_term,
+            "tc_composite":         tc,
+            "cape_ml_grad_25km":    cape_grad_25,
+            "cape_ml_grad_50km":    cape_grad_50,
+            "hlcy_3km_grad_25km":   hlcy_grad_25,
+            "hlcy_3km_grad_50km":   hlcy_grad_50,
+            "cin_ml_grad_25km":     cin_grad_25,
+            "tmp_2m_grad_25km":     tmp_grad_25,
+            "dpt_2m_grad_25km":     dpt_grad_25,
+            "cape_ml_mean_25km":    cape_mean_25,
+            "cape_ml_mean_50km":    cape_mean_50,
+            "cape_ml_mean_100km":   cape_mean_100,
+            "hlcy_3km_mean_25km":   hlcy_mean_25,
+            "hlcy_3km_mean_50km":   hlcy_mean_50,
+            "cin_ml_mean_25km":     cin_mean_25,
+            "tmp_2m_mean_25km":     tmp_mean_25,
+            "dpt_2m_mean_25km":     dpt_mean_25,
+            "vwsh_mean_25km":       vwsh_mean_25,
+            "lat":                  lat_grid,
+            "lon":                  lon_grid,
+            "hour_utc":             np.full(original_shape, hour_utc),
+            "doy_sin":              np.full(original_shape, doy_sin),
+            "doy_cos":              np.full(original_shape, doy_cos),
         }
 
         import pandas as pd

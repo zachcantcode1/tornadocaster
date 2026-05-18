@@ -31,8 +31,9 @@ _HRRR_BASE = "https://noaa-hrrr-bdp-pds.s3.amazonaws.com"
 _LABEL_RADIUS_KM = 40.0
 _LABEL_RADIUS_DEG = _LABEL_RADIUS_KM / 111.0
 
-# Label window must match the inference aggregation period (F001–F018 = 18 hours).
-_LABEL_WINDOW_HOURS = 18
+# 2-hour label window per cycle — tight enough to avoid labeling the whole warm sector,
+# wide enough to catch tornadoes that occur slightly before/after the valid hour.
+_LABEL_WINDOW_HOURS = 2
 
 # HRRR native grid spacing (~3 km). Used to convert spatial scale → Gaussian sigma in pixels.
 _GRID_KM = 3.0
@@ -54,7 +55,7 @@ HRRR_TRAINING_FIELDS = [
     ("vgrd_850",     "VGRD",  "850 mb"),
 ]
 
-# Feature columns — 18 base thermodynamic/kinematic + 10 spatial gradient + 3 temporal = 31
+# Feature columns — 18 base + 7 gradients + 9 neighborhood means + 2 lat/lon + 3 temporal = 39
 FEATURE_COLS = [
     # Base thermodynamic / kinematic fields
     "cape_ml", "cin_ml", "hlcy_3km", "vwsh_0_6km",
@@ -63,29 +64,39 @@ FEATURE_COLS = [
     "tc_cape_term", "tc_lcl_term", "tc_cin_term",
     "tc_srh_term", "tc_bwd_term", "tc_composite",
     # Spatial gradient features — detect drylines, fronts, cap break zones.
-    # Gradient magnitude at 25 km and 50 km scales for the five fields that
-    # change most sharply at convective boundaries.
     "cape_ml_grad_25km", "cape_ml_grad_50km",
     "hlcy_3km_grad_25km", "hlcy_3km_grad_50km",
     "cin_ml_grad_25km",
     "tmp_2m_grad_25km",
     "dpt_2m_grad_25km",
+    # Neighborhood mean features — capture background synoptic environment.
+    "cape_ml_mean_25km", "cape_ml_mean_50km", "cape_ml_mean_100km",
+    "hlcy_3km_mean_25km", "hlcy_3km_mean_50km",
+    "cin_ml_mean_25km",
+    "tmp_2m_mean_25km",
+    "dpt_2m_mean_25km",
+    "vwsh_mean_25km",
+    # Geographic position — teaches model regional climatology implicitly.
+    "lat", "lon",
     # Temporal features — suppress false alarms by time-of-day and season.
-    "hour_utc",    # valid hour 0–23
-    "doy_sin",     # sin(2π·doy/365) — cyclical day-of-year encoding
-    "doy_cos",     # cos(2π·doy/365)
+    "hour_utc",
+    "doy_sin",
+    "doy_cos",
 ]
 
 
 def _grad_mag(arr2d: np.ndarray, scale_km: float) -> np.ndarray:
-    """
-    Gradient magnitude of a 2D field smoothed to *scale_km* spatial scale.
-    Identifies sharp boundaries (drylines, fronts, outflow boundaries).
-    """
+    """Gradient magnitude smoothed to scale_km — detects drylines/fronts."""
     sigma = scale_km / _GRID_KM
     smoothed = gaussian_filter(arr2d.astype(np.float64), sigma=sigma)
     gy, gx = np.gradient(smoothed)
     return np.hypot(gx, gy).astype(np.float32)
+
+
+def _nbr_mean(arr2d: np.ndarray, scale_km: float) -> np.ndarray:
+    """Neighborhood mean at scale_km — captures background synoptic state."""
+    sigma = scale_km / _GRID_KM
+    return gaussian_filter(arr2d.astype(np.float64), sigma=sigma).astype(np.float32)
 
 
 def _hrrr_url(date: datetime, cycle: int, fhour: int = 1) -> str:
@@ -173,9 +184,6 @@ def _extract_features(
         tc = np.zeros_like(cape_ml, dtype=np.float32)
 
     # ── Spatial gradient features ────────────────────────────────────────────
-    # These detect the sharp boundaries (drylines, fronts, outflow) where
-    # convection actually initiates, preventing the model from painting the
-    # entire warm sector as high-probability.
     cape_grad_25  = _grad_mag(cape_ml,  25.0)
     cape_grad_50  = _grad_mag(cape_ml,  50.0)
     hlcy_grad_25  = _grad_mag(hlcy_3km, 25.0)
@@ -183,6 +191,17 @@ def _extract_features(
     cin_grad_25   = _grad_mag(cin_ml,   25.0)
     tmp_grad_25   = _grad_mag(tmp_2m,   25.0)
     dpt_grad_25   = _grad_mag(dpt_2m,   25.0)
+
+    # ── Neighborhood mean features ───────────────────────────────────────────
+    cape_mean_25  = _nbr_mean(cape_ml,  25.0)
+    cape_mean_50  = _nbr_mean(cape_ml,  50.0)
+    cape_mean_100 = _nbr_mean(cape_ml, 100.0)
+    hlcy_mean_25  = _nbr_mean(hlcy_3km, 25.0)
+    hlcy_mean_50  = _nbr_mean(hlcy_3km, 50.0)
+    cin_mean_25   = _nbr_mean(cin_ml,   25.0)
+    tmp_mean_25   = _nbr_mean(tmp_2m,   25.0)
+    dpt_mean_25   = _nbr_mean(dpt_2m,   25.0)
+    vwsh_mean_25  = _nbr_mean(vwsh,     25.0)
 
     # ── Temporal features ────────────────────────────────────────────────────
     if valid_start is not None:
@@ -194,14 +213,20 @@ def _extract_features(
     doy_sin = np.sin(2.0 * np.pi * doy / 365.0)
     doy_cos = np.cos(2.0 * np.pi * doy / 365.0)
 
-    H, W = lat2d.shape if lat2d.ndim == 2 else (lat2d.shape[0], lon2d.shape[0])
+    if lat2d.ndim == 2:
+        H, W = lat2d.shape
+        lat_grid = lat2d.astype(np.float64)
+        lon_grid = lon2d.astype(np.float64)
+    else:
+        H, W = lat2d.shape[0], lon2d.shape[0]
+        lon_grid, lat_grid = np.meshgrid(lon2d, lat2d)
     N = H * W
 
     cols = np.stack([
         cape_ml, cin_ml, hlcy_3km, vwsh,
         tmp_2m, dpt_2m, cape_sfc, cape_mu, cin_sfc,
         ugrd_10m, vgrd_10m, bwd,
-        np.clip(cape_ml, 0, None) / 1500.0,  # tc_cape_term
+        np.clip(cape_ml, 0, None) / 1500.0,
         lcl_term, cin_term, srh_term, bwd_term,
         tc.astype(np.float64),
         # gradients
@@ -212,11 +237,24 @@ def _extract_features(
         cin_grad_25.astype(np.float64),
         tmp_grad_25.astype(np.float64),
         dpt_grad_25.astype(np.float64),
+        # neighborhood means
+        cape_mean_25.astype(np.float64),
+        cape_mean_50.astype(np.float64),
+        cape_mean_100.astype(np.float64),
+        hlcy_mean_25.astype(np.float64),
+        hlcy_mean_50.astype(np.float64),
+        cin_mean_25.astype(np.float64),
+        tmp_mean_25.astype(np.float64),
+        dpt_mean_25.astype(np.float64),
+        vwsh_mean_25.astype(np.float64),
+        # geographic position
+        lat_grid,
+        lon_grid,
         # temporal (broadcast scalar to grid)
         np.full((H, W), hour_utc),
         np.full((H, W), doy_sin),
         np.full((H, W), doy_cos),
-    ], axis=-1)  # (H, W, 31)
+    ], axis=-1)  # (H, W, 39)
 
     return cols.reshape(N, len(FEATURE_COLS)).astype(np.float32)
 
