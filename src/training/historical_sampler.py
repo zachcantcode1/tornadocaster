@@ -31,9 +31,9 @@ _HRRR_BASE = "https://noaa-hrrr-bdp-pds.s3.amazonaws.com"
 _LABEL_RADIUS_KM = 40.0
 _LABEL_RADIUS_DEG = _LABEL_RADIUS_KM / 111.0
 
-# 2-hour label window per cycle — tight enough to avoid labeling the whole warm sector,
-# wide enough to catch tornadoes that occur slightly before/after the valid hour.
-_LABEL_WINDOW_HOURS = 2
+# 6-hour label window per cycle — tight enough to avoid labeling the whole warm sector,
+# wide enough to give a meaningful base rate for the model to learn from.
+_LABEL_WINDOW_HOURS = 6
 
 # HRRR native grid spacing (~3 km). Used to convert spatial scale → Gaussian sigma in pixels.
 _GRID_KM = 3.0
