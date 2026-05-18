@@ -87,7 +87,7 @@ async def main(years: list[int], out_dir: Path) -> None:
     logger.info("Adding %d quiet (null) days for negative examples", len(null_days))
 
     # Process tornado days
-    sem = asyncio.Semaphore(6)   # 6 concurrent days saturates a typical home connection
+    sem = asyncio.Semaphore(20)  # 20 concurrent days for datacenter/fast connection
     async def bounded(date, rpts, label):
         async with sem:
             return await process_day(date, rpts, out_dir, label)

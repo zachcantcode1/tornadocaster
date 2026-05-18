@@ -271,25 +271,18 @@ async def sample_day(
     Fetch all HRRR cycles for *date*, compute features and labels.
     Returns (features, labels) arrays concatenated across cycles, or None.
     """
-    all_feats  = []
-    all_labels = []
-
-    for cycle in cycles:
+    async def _fetch_one_cycle(cycle: int):
         result = await _fetch_hrrr_fields(date, cycle, fhour)
         if result is None:
-            continue
+            return None
         fields, lat2d, lon2d = result
-
         valid_start = date.replace(hour=cycle, minute=0, second=0, microsecond=0,
                                    tzinfo=timezone.utc) + timedelta(hours=fhour)
         valid_end   = valid_start + timedelta(hours=_LABEL_WINDOW_HOURS)
-
         feats = _extract_features(fields, lat2d, lon2d, valid_start=valid_start)
         if feats is None:
-            continue
-
+            return None
         labels = _make_labels(lat2d, lon2d, reports, valid_start, valid_end)
-
         pos_idx = np.where(labels == 1)[0]
         neg_idx = np.where(labels == 0)[0]
         n_pos   = len(pos_idx)
@@ -297,10 +290,13 @@ async def sample_day(
         rng     = np.random.default_rng(seed=int(date.timestamp()) + cycle)
         neg_sampled = rng.choice(neg_idx, size=n_neg, replace=False)
         keep = np.concatenate([pos_idx, neg_sampled])
-
-        all_feats.append(feats[keep])
-        all_labels.append(labels[keep])
         logger.info("  cycle %02dZ: %d pos / %d neg samples", cycle, n_pos, n_neg)
+        return feats[keep], labels[keep]
+
+    cycle_results = await asyncio.gather(*[_fetch_one_cycle(c) for c in cycles])
+
+    all_feats  = [r[0] for r in cycle_results if r is not None]
+    all_labels = [r[1] for r in cycle_results if r is not None]
 
     if not all_feats:
         return None
