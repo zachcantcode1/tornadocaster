@@ -21,3 +21,17 @@ coverage.xml
 
 # Local cloned upstream repo cache
 nadocast_upstream/
+
+# Output images
+*.png
+
+# Training data, model artifacts, logs
+data/
+models/
+logs/
+
+# Shell session / local scripts output
+artifacts/
+
+# Claude Code local memory
+.claude/
