@@ -34,6 +34,7 @@ FIRST_PASS_FIELD_CATALOG = [
     ("cin_mu", "CIN", "180-0 mb above ground", "CIN:180-0 mb above ground:hour fcst:wt ens mean"),
     # Shear / rotation
     ("hlcy_3km", "HLCY", "3000-0 m above ground", "HLCY:3000-0 m above ground:hour fcst:wt ens mean"),
+    ("hlcy_1km", "HLCY", "1000-0 m above ground", "HLCY:1000-0 m above ground:hour fcst:wt ens mean"),
     ("vwsh_0_6km", "VWSH", "6000-0 m above ground", "VWSH:6000-0 m above ground:hour fcst:wt ens mean"),
     ("vwsh_surface", "VWSH", "surface", "VWSH:surface:hour fcst:wt ens mean"),
     # Geopotential heights
@@ -45,12 +46,16 @@ FIRST_PASS_FIELD_CATALOG = [
     ("hgt_cloud_base", "HGT", "cloud base", "HGT:cloud base:hour fcst:wt ens mean"),
     ("hgt_cloud_ceiling", "HGT", "cloud ceiling", "HGT:cloud ceiling:hour fcst:wt ens mean"),
     # U-component winds
+    ("ugrd_10m", "UGRD", "10 m above ground", "UGRD:10 m above ground:hour fcst:wt ens mean"),
+    ("ugrd_80m", "UGRD", "80 m above ground", "UGRD:80 m above ground:hour fcst:wt ens mean"),
     ("ugrd_250", "UGRD", "250 mb", "UGRD:250 mb:hour fcst:wt ens mean"),
     ("ugrd_500", "UGRD", "500 mb", "UGRD:500 mb:hour fcst:wt ens mean"),
     ("ugrd_700", "UGRD", "700 mb", "UGRD:700 mb:hour fcst:wt ens mean"),
     ("ugrd_850", "UGRD", "850 mb", "UGRD:850 mb:hour fcst:wt ens mean"),
     ("ugrd_925", "UGRD", "925 mb", "UGRD:925 mb:hour fcst:wt ens mean"),
     # V-component winds
+    ("vgrd_10m", "VGRD", "10 m above ground", "VGRD:10 m above ground:hour fcst:wt ens mean"),
+    ("vgrd_80m", "VGRD", "80 m above ground", "VGRD:80 m above ground:hour fcst:wt ens mean"),
     ("vgrd_250", "VGRD", "250 mb", "VGRD:250 mb:hour fcst:wt ens mean"),
     ("vgrd_500", "VGRD", "500 mb", "VGRD:500 mb:hour fcst:wt ens mean"),
     ("vgrd_700", "VGRD", "700 mb", "VGRD:700 mb:hour fcst:wt ens mean"),
@@ -95,6 +100,12 @@ FIRST_PASS_FIELD_CATALOG = [
     ("tsoil_0_10cm", "TSOIL", "0-0.1 m below ground", "TSOIL:0-0.1 m below ground:hour fcst:wt ens mean"),
     # Other
     ("hindex_surface", "HINDEX", "surface", "HINDEX:surface:hour fcst:wt ens mean"),
+    # Convective indicators — storm gate in calibrated_predictor requires these to
+    # distinguish active convection from a favorable-but-storm-free environment.
+    ("refc_atm",    "REFC",   "entire atmosphere", "REFC:entire atmosphere:hour fcst:wt ens mean"),
+    ("mxuphl_03km", "MXUPHL", "3000-0 m above ground",    "MXUPHL:3000-0 m above ground:hour fcst:wt ens mean"),
+    ("mxuphl_25km", "MXUPHL", "5000-2000 m above ground", "MXUPHL:5000-2000 m above ground:hour fcst:wt ens mean"),
+    ("gust_surface", "GUST",  "surface",                  "GUST:surface:hour fcst:wt ens mean"),
 ]
 
 FIRST_PASS_DERIVED_LEGACY_BASE = {

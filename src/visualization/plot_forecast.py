@@ -119,15 +119,28 @@ def compute_tornado_composite(fields: dict[str, xr.DataArray]) -> Optional[np.nd
             # No wind data at all — assume climatological-average BWD (max term = 1.0).
             bwd_term = np.ones_like(cape_v)
 
-    # ── Max updraft helicity gate (RRFS only) ────────────────────────────────
-    # MXUPHL > 25 J/kg indicates a rotating updraft resolved by the model.
-    # Blend: below 10 J/kg no enhancement; 10-100 J/kg ramps from 1.0 → 1.5.
+    # ── Max updraft helicity gate ─────────────────────────────────────────────
+    # MXUPHL > 10 J/kg confirms a rotating updraft. Ramps from 1.0 → 1.5 as an
+    # enhancer where rotation is resolved; does not suppress where absent.
     mxuphl = fields.get("mxuphl_03km")
     if mxuphl is not None:
         uh_v = np.clip(np.asarray(mxuphl.values, dtype=np.float64), 0.0, None)
         uh_gate = np.clip(1.0 + 0.5 * (uh_v - 10.0) / 90.0, 1.0, 1.5)
     else:
         uh_gate = np.ones_like(cape_v)
+
+    # ── Reflectivity convective gate ─────────────────────────────────────────
+    # Suppress TC composite where no storm signal exists. Without this gate,
+    # high-CAPE/high-SRH environments produce large false-alarm blobs on days
+    # where convection never initiates. Floor at 0.05 preserves faint background
+    # signal. Available for HRRR and RRFS after catalog update.
+    refc = fields.get("refc_atm")
+    if refc is not None:
+        refc_v = np.asarray(refc.values, dtype=np.float64)
+        refc_smooth = gaussian_filter(refc_v, sigma=4.0)
+        refc_gate = np.clip((refc_smooth - 15.0) / 25.0, 0.05, 1.0)
+    else:
+        refc_gate = np.ones_like(cape_v)
 
     composite = (
         np.clip(cape_v, 0.0, None) / 1500.0
@@ -136,6 +149,7 @@ def compute_tornado_composite(fields: dict[str, xr.DataArray]) -> Optional[np.nd
         * np.clip(hlcy_v, 0.0, None) / 150.0
         * bwd_term
         * uh_gate
+        * refc_gate
     )
     return np.clip(composite, 0.0, 10.0).astype(np.float32)
 

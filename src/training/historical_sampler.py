@@ -44,6 +44,7 @@ HRRR_TRAINING_FIELDS = [
     ("cape_ml",      "CAPE",  "90-0 mb above ground"),
     ("cin_ml",       "CIN",   "90-0 mb above ground"),
     ("hlcy_3km",     "HLCY",  "3000-0 m above ground"),
+    ("hlcy_1km",     "HLCY",  "1000-0 m above ground"),
     ("vwsh_0_6km",   "VWSH",  "6000-0 m above ground"),
     ("tmp_2m",       "TMP",   "2 m above ground"),
     ("dpt_2m",       "DPT",   "2 m above ground"),
@@ -56,14 +57,19 @@ HRRR_TRAINING_FIELDS = [
     ("vgrd_850",     "VGRD",  "850 mb"),
 ]
 
-# Feature columns — 18 base + 7 gradients + 9 neighborhood means + 2 lat/lon + 3 temporal + 1 climo = 40
+# Feature columns — 44 total
+# 19 base + 8 storm-physics composites + 7 gradients + 9 means + 2 geo + 3 temporal + 1 climo + 1 fhour
 FEATURE_COLS = [
     # Base thermodynamic / kinematic fields
     "cape_ml", "cin_ml", "hlcy_3km", "vwsh_0_6km",
     "tmp_2m", "dpt_2m", "cape_surface", "cape_mu", "cin_surface",
     "ugrd_10m", "vgrd_10m", "bwd_850_sfc",
+    "hlcy_1km",
+    # TC composite component terms + storm-physics composites
     "tc_cape_term", "tc_lcl_term", "tc_cin_term",
     "tc_srh_term", "tc_bwd_term", "tc_composite",
+    "ehi_1km",     # Energy Helicity Index (CAPE × 1km SRH / 160000)
+    "stp_fixed",   # Significant Tornado Parameter fixed-layer (Thompson 2003)
     # Spatial gradient features — detect drylines, fronts, cap break zones.
     "cape_ml_grad_25km", "cape_ml_grad_50km",
     "hlcy_3km_grad_25km", "hlcy_3km_grad_50km",
@@ -77,14 +83,16 @@ FEATURE_COLS = [
     "tmp_2m_mean_25km",
     "dpt_2m_mean_25km",
     "vwsh_mean_25km",
-    # Geographic position — teaches model regional climatology implicitly.
+    # Geographic position
     "lat", "lon",
-    # Temporal features — suppress false alarms by time-of-day and season.
+    # Temporal features
     "hour_utc",
     "doy_sin",
     "doy_cos",
     # Climatological EF1+ tornado frequency — strongest geographic prior.
     "climo_freq",
+    # Forecast lead time — lets model adjust for uncertainty at longer ranges.
+    "fhour",
 ]
 
 
@@ -146,6 +154,7 @@ def _extract_features(
     lat2d: np.ndarray,
     lon2d: np.ndarray,
     valid_start: Optional[datetime] = None,
+    fhour: int = 1,
 ) -> Optional[np.ndarray]:
     """
     Compute per-grid-point feature matrix from fetched HRRR fields.
@@ -160,6 +169,7 @@ def _extract_features(
     cape_ml    = v("cape_ml")
     cin_ml     = v("cin_ml")
     hlcy_3km   = v("hlcy_3km")
+    hlcy_1km   = v("hlcy_1km")
     vwsh       = v("vwsh_0_6km")
     tmp_2m     = v("tmp_2m")
     dpt_2m     = v("dpt_2m")
@@ -180,6 +190,17 @@ def _extract_features(
     cin_term = np.where(cin_ml < -50.0, 0.0, np.clip((200.0 + cin_ml) / 150.0, 0.0, 1.0))
     bwd_term = np.clip(vwsh, 0.0, None) / 12.0
     srh_term = np.clip(hlcy_3km, 0.0, None) / 150.0
+
+    # Storm-physics composites using 1km SRH
+    ehi_1km = np.clip(cape_ml, 0.0, None) * np.clip(hlcy_1km, 0.0, None) / 160000.0
+    # STP fixed-layer (Thompson 2003): MLCAPE/1500 * LCL * CIN * SRH1/150 * SHR6/20
+    stp_fixed = (
+        np.clip(cape_ml, 0.0, None) / 1500.0
+        * lcl_term
+        * cin_term
+        * np.clip(hlcy_1km, 0.0, None) / 150.0
+        * np.clip(vwsh, 0.0, None) / 20.0
+    )
 
     derived = build_first_pass_derived_fields(fields)
     tc = compute_tornado_composite({**fields, **derived})
@@ -232,9 +253,12 @@ def _extract_features(
         cape_ml, cin_ml, hlcy_3km, vwsh,
         tmp_2m, dpt_2m, cape_sfc, cape_mu, cin_sfc,
         ugrd_10m, vgrd_10m, bwd,
+        hlcy_1km,
         np.clip(cape_ml, 0, None) / 1500.0,
         lcl_term, cin_term, srh_term, bwd_term,
         tc.astype(np.float64),
+        ehi_1km,
+        stp_fixed,
         # gradients
         cape_grad_25.astype(np.float64),
         cape_grad_50.astype(np.float64),
@@ -262,7 +286,9 @@ def _extract_features(
         np.full((H, W), doy_cos),
         # climatological tornado frequency
         climo,
-    ], axis=-1)  # (H, W, 40)
+        # forecast lead time
+        np.full((H, W), float(fhour)),
+    ], axis=-1)  # (H, W, 44)
 
     return cols.reshape(N, len(FEATURE_COLS)).astype(np.float32)
 
@@ -311,45 +337,47 @@ async def sample_day(
     date: datetime,
     reports: pd.DataFrame,
     cycles: list[int] = (0, 6, 12, 18),
-    fhour: int = 1,
+    fhours: tuple[int, ...] = (1,),
 ) -> Optional[tuple[np.ndarray, np.ndarray]]:
     """
-    Fetch all HRRR cycles for *date*, compute features and labels.
-    Returns (features, labels) arrays concatenated across cycles, or None.
+    Fetch all HRRR cycles × fhours for *date*, compute features and labels.
+    Returns (features, labels) arrays concatenated across all (cycle, fhour)
+    combinations, or None if nothing could be fetched.
     """
     all_feats  = []
     all_labels = []
 
     for cycle in cycles:
-        try:
-            result = await _fetch_hrrr_fields(date, cycle, fhour)
-            if result is None:
-                logger.debug("  cycle %02dZ: fetch returned None", cycle)
-                continue
-            fields, lat2d, lon2d = result
+        for fhour in fhours:
+            try:
+                result = await _fetch_hrrr_fields(date, cycle, fhour)
+                if result is None:
+                    logger.debug("  cycle %02dZ f%02d: fetch returned None", cycle, fhour)
+                    continue
+                fields, lat2d, lon2d = result
 
-            valid_start = date.replace(hour=cycle, minute=0, second=0, microsecond=0,
-                                       tzinfo=timezone.utc) + timedelta(hours=fhour)
-            valid_end   = valid_start + timedelta(hours=_LABEL_WINDOW_HOURS)
+                valid_start = date.replace(hour=cycle, minute=0, second=0, microsecond=0,
+                                           tzinfo=timezone.utc) + timedelta(hours=fhour)
+                valid_end   = valid_start + timedelta(hours=_LABEL_WINDOW_HOURS)
 
-            feats = _extract_features(fields, lat2d, lon2d, valid_start=valid_start)
-            if feats is None:
-                logger.warning("  cycle %02dZ: _extract_features returned None", cycle)
-                continue
+                feats = _extract_features(fields, lat2d, lon2d, valid_start=valid_start, fhour=fhour)
+                if feats is None:
+                    logger.warning("  cycle %02dZ f%02d: _extract_features returned None", cycle, fhour)
+                    continue
 
-            labels = _make_labels(lat2d, lon2d, reports, valid_start, valid_end)
-            pos_idx = np.where(labels == 1)[0]
-            neg_idx = np.where(labels == 0)[0]
-            n_pos   = len(pos_idx)
-            n_neg   = min(len(neg_idx), max(n_pos * 5, 8000))
-            rng     = np.random.default_rng(seed=int(date.timestamp()) + cycle)
-            neg_sampled = rng.choice(neg_idx, size=n_neg, replace=False)
-            keep = np.concatenate([pos_idx, neg_sampled])
-            all_feats.append(feats[keep])
-            all_labels.append(labels[keep])
-            logger.info("  cycle %02dZ: %d pos / %d neg samples", cycle, n_pos, n_neg)
-        except Exception as exc:
-            logger.error("  cycle %02dZ EXCEPTION: %s", cycle, exc, exc_info=True)
+                labels = _make_labels(lat2d, lon2d, reports, valid_start, valid_end)
+                pos_idx = np.where(labels == 1)[0]
+                neg_idx = np.where(labels == 0)[0]
+                n_pos   = len(pos_idx)
+                n_neg   = min(len(neg_idx), max(n_pos * 5, 8000))
+                rng     = np.random.default_rng(seed=int(date.timestamp()) + cycle + fhour)
+                neg_sampled = rng.choice(neg_idx, size=n_neg, replace=False)
+                keep = np.concatenate([pos_idx, neg_sampled])
+                all_feats.append(feats[keep])
+                all_labels.append(labels[keep])
+                logger.info("  cycle %02dZ f%02d: %d pos / %d neg samples", cycle, fhour, n_pos, n_neg)
+            except Exception as exc:
+                logger.error("  cycle %02dZ f%02d EXCEPTION: %s", cycle, fhour, exc, exc_info=True)
 
     if not all_feats:
         return None

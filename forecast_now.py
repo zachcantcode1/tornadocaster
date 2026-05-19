@@ -57,12 +57,15 @@ _RRFS_NEEDED = {
     "gust_surface", "hail_surface", "refc_atm",
 }
 
-# HRRR fallback fields
+# HRRR fallback fields — includes storm-support fields so the ML storm gate
+# and TC composite REFC gate have signal even in HRRR mode.
 _HRRR_NEEDED = {
-    "cape_ml", "cin_ml", "hlcy_3km", "vwsh_0_6km", "tmp_2m", "dpt_2m",
+    "cape_ml", "cin_ml", "hlcy_3km", "hlcy_1km", "vwsh_0_6km", "tmp_2m", "dpt_2m",
     "cape_surface", "cape_mu", "cin_surface", "cin_mu",
+    "ugrd_10m", "vgrd_10m", "ugrd_80m", "vgrd_80m",
     "ugrd_500", "vgrd_500", "ugrd_850", "vgrd_850",
     "ugrd_925", "vgrd_925", "tmp_500", "tmp_700",
+    "refc_atm", "mxuphl_03km", "mxuphl_25km", "gust_surface",
 }
 
 _RRFS_FETCH_CATALOG = [row for row in RRFS_FIELD_CATALOG if row[0] in _RRFS_NEEDED]
@@ -98,6 +101,7 @@ async def fetch_one_hour(
     url: str, catalog: list, sem: asyncio.Semaphore,
     use_ml: bool = False, valid_dt: datetime | None = None,
     ml_model_path: Path | None = None,
+    fhour: int = 1,
 ) -> tuple[np.ndarray, np.ndarray | None, np.ndarray, np.ndarray] | None:
     async with sem:
         try:
@@ -108,7 +112,7 @@ async def fetch_one_hour(
             if use_ml and _ML_AVAILABLE:
                 try:
                     predictor = _get_predictor(ml_model_path)
-                    composite = predictor.predict(all_fields, valid_dt=valid_dt)
+                    composite = predictor.predict(all_fields, valid_dt=valid_dt, fhour=fhour)
                     if composite is not None:
                         logger.info("  ✓ %s  max prob=%.3f (ML)", url.split("/")[-1], float(np.nanmax(composite)))
                     else:
@@ -285,8 +289,8 @@ async def main(
 
     sem    = asyncio.Semaphore(4)
     results = await asyncio.gather(*[
-        fetch_one_hour(u, catalog, sem, use_ml=use_ml, valid_dt=vdt, ml_model_path=ml_model_path)
-        for u, vdt in zip(urls, valid_dts)
+        fetch_one_hour(u, catalog, sem, use_ml=use_ml, valid_dt=vdt, ml_model_path=ml_model_path, fhour=fh)
+        for u, vdt, fh in zip(urls, valid_dts, fhours)
     ])
 
     # Accumulate across hours.

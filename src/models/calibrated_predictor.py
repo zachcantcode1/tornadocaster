@@ -219,6 +219,7 @@ class TornadoProbabilityPredictor:
         self,
         fields: dict[str, xr.DataArray],
         valid_dt: Optional[datetime] = None,
+        fhour: int = 1,
     ) -> Optional[np.ndarray]:
         """
         Compute calibrated tornado probability for each grid point.
@@ -256,6 +257,7 @@ class TornadoProbabilityPredictor:
 
         cin_ml     = v("cin_ml")
         hlcy_3km   = v("hlcy_3km")
+        hlcy_1km   = v("hlcy_1km", 0.0)
         vwsh_arr   = optional_v("vwsh_0_6km")
         tmp_2m     = v("tmp_2m")
         dpt_2m     = v("dpt_2m")
@@ -266,6 +268,8 @@ class TornadoProbabilityPredictor:
         vgrd_10m   = v("vgrd_10m")
         ugrd_850   = optional_v("ugrd_850")
         vgrd_850   = optional_v("vgrd_850")
+        ugrd_500   = optional_v("ugrd_500")
+        vgrd_500   = optional_v("vgrd_500")
         ugrd_hi_proxy = optional_v("ugrd_pbl")
         vgrd_hi_proxy = optional_v("vgrd_pbl")
         if ugrd_hi_proxy is None:
@@ -273,14 +277,26 @@ class TornadoProbabilityPredictor:
         if vgrd_hi_proxy is None:
             vgrd_hi_proxy = optional_v("vgrd_80m")
 
+        # vwsh for ML model features: must match training distribution.
+        # Training used HRRR which lacks VWSH, so vwsh_0_6km was 0.0 in all training shards.
         if vwsh_arr is not None:
             vwsh = vwsh_arr
+        else:
+            vwsh = np.zeros(original_shape, dtype=np.float64)
+
+        # gate_vwsh for storm-gate env_support only — uses best available shear estimate
+        # without affecting the ML model's feature space.
+        if vwsh_arr is not None:
+            gate_vwsh = vwsh_arr
+        elif ugrd_500 is not None and vgrd_500 is not None:
+            # 500mb (~5.5km AGL) minus 10m is a good 0-6km bulk shear proxy
+            gate_vwsh = np.clip(np.hypot(ugrd_500 - ugrd_10m, vgrd_500 - vgrd_10m), 0.0, 40.0)
         elif ugrd_hi_proxy is not None and vgrd_hi_proxy is not None:
             shallow_shear = np.hypot(ugrd_hi_proxy - ugrd_10m, vgrd_hi_proxy - vgrd_10m)
-            vwsh = np.clip(shallow_shear * 2.0, 0.0, 35.0)
+            gate_vwsh = np.clip(shallow_shear * 2.0, 0.0, 35.0)
         else:
-            logger.warning("calibrated_predictor: no usable bulk-shear field; using conservative 6 m/s default")
-            vwsh = np.full(original_shape, 6.0, dtype=np.float64)
+            logger.warning("calibrated_predictor: no usable bulk-shear field for storm gate; using 6 m/s")
+            gate_vwsh = np.full(original_shape, 6.0, dtype=np.float64)
 
         if ugrd_850 is not None and vgrd_850 is not None:
             bwd_850_sfc = np.hypot(ugrd_850 - ugrd_10m, vgrd_850 - vgrd_10m)
@@ -302,6 +318,16 @@ class TornadoProbabilityPredictor:
             * lcl_term * cin_term * srh_term * bwd_term
         )
         tc = np.clip(tc, 0.0, 10.0)
+
+        # Storm-physics composites using 1km SRH
+        ehi_1km = np.clip(cape_ml, 0.0, None) * np.clip(hlcy_1km, 0.0, None) / 160000.0
+        stp_fixed = (
+            np.clip(cape_ml, 0.0, None) / 1500.0
+            * lcl_term
+            * cin_term
+            * np.clip(hlcy_1km, 0.0, None) / 150.0
+            * np.clip(vwsh, 0.0, None) / 20.0
+        )
 
         # ── Spatial gradient features ────────────────────────────────────────
         cape_grad_25 = _grad_mag(cape_ml,  25.0)
@@ -356,12 +382,15 @@ class TornadoProbabilityPredictor:
             "ugrd_10m":             ugrd_10m,
             "vgrd_10m":             vgrd_10m,
             "bwd_850_sfc":          bwd_850_sfc,
+            "hlcy_1km":             hlcy_1km,
             "tc_cape_term":         np.clip(cape_ml, 0, None) / 1500.0,
             "tc_lcl_term":          lcl_term,
             "tc_cin_term":          cin_term,
             "tc_srh_term":          srh_term,
             "tc_bwd_term":          bwd_term,
             "tc_composite":         tc,
+            "ehi_1km":              ehi_1km,
+            "stp_fixed":            stp_fixed,
             "cape_ml_grad_25km":    cape_grad_25,
             "cape_ml_grad_50km":    cape_grad_50,
             "hlcy_3km_grad_25km":   hlcy_grad_25,
@@ -388,6 +417,7 @@ class TornadoProbabilityPredictor:
                                         lon_grid.astype(np.float32),
                                         valid_dt.month if valid_dt is not None else 5,
                                     ).astype(np.float32),
+            "fhour":                np.full(original_shape, float(fhour), dtype=np.float32),
         }
 
         import pandas as pd
@@ -398,7 +428,7 @@ class TornadoProbabilityPredictor:
         raw_scores = self._lgbm.predict_proba(X)[:, 1]
         cal_probs  = self._calibrator.predict(raw_scores).astype(np.float32).reshape(original_shape)
         support = _convective_support(fields, original_shape)
-        env_support = _tornado_environment_support(cape_ml, cin_ml, hlcy_3km, vwsh, lcl_m)
+        env_support = _tornado_environment_support(cape_ml, cin_ml, hlcy_3km, gate_vwsh, lcl_m)
         gated_probs = _apply_storm_gate(cal_probs, support, env_support)
         if np.nanmax(cal_probs) > 0.25 and np.nanmax(gated_probs) < np.nanmax(cal_probs) * 0.5:
             logger.info(

@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 def load_dataset(
     data_dir: Path,
     include_latlon: bool = False,
-    include_seasonal_priors: bool = False,
+    include_seasonal_priors: bool = True,
 ) -> tuple[pd.DataFrame, np.ndarray, np.ndarray, list[str]]:
     """Load all Parquet shards into (X, y) arrays."""
     shards = sorted(data_dir.glob("*.parquet"))
@@ -52,6 +52,13 @@ def load_dataset(
         features = [c for c in features if c not in {"lat", "lon"}]
     if not include_seasonal_priors:
         features = [c for c in features if c not in {"doy_sin", "doy_cos", "climo_freq"}]
+    missing_cols = [c for c in features if c not in df.columns]
+    if missing_cols:
+        raise ValueError(
+            f"Dataset shards are missing {len(missing_cols)} feature column(s): {missing_cols}. "
+            "Re-run `python -m src.training.build_dataset` to regenerate shards with the "
+            "updated feature set before training."
+        )
     X = df[features].astype(np.float32)   # keep as DataFrame — preserves feature names
     y = df["label"].values.astype(np.int8)
     if "date" in df:
@@ -66,7 +73,7 @@ def train(
     data_dir: Path,
     out_path: Path,
     include_latlon: bool = False,
-    include_seasonal_priors: bool = False,
+    include_seasonal_priors: bool = True,
 ) -> None:
     import lightgbm as lgb
     from sklearn.isotonic import IsotonicRegression
@@ -107,15 +114,18 @@ def train(
 
     # ── LightGBM ─────────────────────────────────────────────────────────────
     pos_weight = float((y_train == 0).sum()) / max(float((y_train == 1).sum()), 1)
-    pos_weight_capped = min(pos_weight, 10.0)
+    # Cap raised to 20: tornado events are genuinely rare, and the original cap of
+    # 10 was suppressing signal for smaller outbreak days with few positive samples.
+    pos_weight_capped = min(pos_weight, 20.0)
     logger.info("Training LightGBM  (raw pos_weight=%.1f  capped=%.1f) …", pos_weight, pos_weight_capped)
 
     model = lgb.LGBMClassifier(
-        n_estimators=800,
+        n_estimators=1500,
         learning_rate=0.03,
-        num_leaves=31,
-        min_child_samples=200,
+        num_leaves=63,
+        min_child_samples=50,
         subsample=0.8,
+        subsample_freq=1,
         colsample_bytree=0.8,
         reg_alpha=0.1,
         reg_lambda=0.1,
@@ -186,14 +196,15 @@ if __name__ == "__main__":
         help="Allow raw lat/lon as model features. Default excludes them to reduce climatology overfit.",
     )
     parser.add_argument(
-        "--include-seasonal-priors",
+        "--no-seasonal-priors",
         action="store_true",
-        help="Allow doy_sin/doy_cos/climo_freq as model features. Default excludes them to reduce broad climatology blobs.",
+        dest="no_seasonal_priors",
+        help="Exclude doy_sin/doy_cos/climo_freq/fhour features. Default is to include them.",
     )
     args = parser.parse_args()
     train(
         args.data,
         args.out,
         include_latlon=args.include_latlon,
-        include_seasonal_priors=args.include_seasonal_priors,
+        include_seasonal_priors=not args.no_seasonal_priors,
     )

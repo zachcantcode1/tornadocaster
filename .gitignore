@@ -25,9 +25,8 @@ nadocast_upstream/
 # Output images
 *.png
 
-# Training data, model artifacts, logs
+# Training data and logs (large/generated)
 data/
-models/
 logs/
 
 # Shell session / local scripts output

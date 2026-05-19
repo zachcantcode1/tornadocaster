@@ -30,6 +30,12 @@ logger = logging.getLogger(__name__)
 # ensure the model sees plenty of null-environment examples.
 _NULL_DAYS_PER_TORNADO_DAY = 0.25   # 1 null day per 4 tornado days
 
+# Forecast hours to sample per HRRR cycle. Including multiple lead times teaches
+# the model how the environment evolves and improves forecast consistency across
+# the f1–f24 window. Three hours covers early (f1), mid (f6), and longer (f12)
+# ranges without making per-day fetches unmanageable.
+_TRAINING_FHOURS = (1, 6, 12)
+
 
 async def process_day(
     date: datetime,
@@ -46,7 +52,7 @@ async def process_day(
 
     logger.info("Processing %s ...", tag)
     try:
-        result = await sample_day(date, reports)
+        result = await sample_day(date, reports, fhours=_TRAINING_FHOURS)
     except Exception as exc:
         logger.error("EXCEPTION in sample_day for %s: %s", tag, exc, exc_info=True)
         return False
