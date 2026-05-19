@@ -41,10 +41,160 @@ def _nbr_mean(arr2d: np.ndarray, scale_km: float) -> np.ndarray:
     return gaussian_filter(arr2d.astype(np.float64), sigma=sigma).astype(np.float32)
 
 
+def _soft_ramp(arr2d: np.ndarray, lo: float, hi: float) -> np.ndarray:
+    """Map values to a clipped 0-1 support score."""
+    if hi <= lo:
+        raise ValueError("hi must be greater than lo")
+    return np.clip((arr2d.astype(np.float64) - lo) / (hi - lo), 0.0, 1.0)
+
+
+def _convective_support(fields: dict[str, xr.DataArray], shape: tuple[int, int]) -> np.ndarray:
+    """
+    Estimate whether convection exists near each grid point.
+
+    The ML model is an environment model; this support field prevents high
+    tornado probabilities in places with no storm signal. It intentionally uses
+    several optional RRFS/HRRR fields and degrades gracefully when some are
+    unavailable.
+    """
+    core_support = np.zeros(shape, dtype=np.float64)
+    rotation_support = np.zeros(shape, dtype=np.float64)
+    weak_support = np.zeros(shape, dtype=np.float64)
+
+    def arr(name: str) -> Optional[np.ndarray]:
+        da = fields.get(name)
+        if da is None:
+            return None
+        return np.nan_to_num(np.asarray(da.values, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0)
+
+    refc = arr("refc_atm")
+    if refc is not None:
+        # Require a real convective core for meaningful tornado probabilities.
+        # Weak stratiform/light precip should not unlock broad risk areas.
+        core_support = np.maximum(core_support, _soft_ramp(refc, 35.0, 55.0))
+        weak_support = np.maximum(weak_support, 0.30 * _soft_ramp(refc, 25.0, 40.0))
+
+    mxuphl = arr("mxuphl_03km")
+    mxuphl_25km = arr("mxuphl_25km")
+    if mxuphl is not None or mxuphl_25km is not None:
+        uh = np.zeros(shape, dtype=np.float64)
+        if mxuphl is not None:
+            uh = np.maximum(uh, np.clip(mxuphl, 0.0, None))
+        if mxuphl_25km is not None:
+            uh = np.maximum(uh, np.clip(mxuphl_25km, 0.0, None))
+        rotation_support = np.maximum(rotation_support, _soft_ramp(uh, 25.0, 125.0))
+        weak_support = np.maximum(weak_support, 0.25 * _soft_ramp(uh, 10.0, 50.0))
+
+    relv = arr("relv_1km")
+    if relv is not None:
+        relv_scaled = np.abs(relv)
+        if np.nanmax(relv_scaled) < 1.0:
+            relv_scaled = relv_scaled * 1e5
+        rotation_support = np.maximum(rotation_support, 0.70 * _soft_ramp(relv_scaled, 10.0, 40.0))
+
+    efhl = arr("efhl_surface")
+    if efhl is not None:
+        rotation_support = np.maximum(rotation_support, 0.55 * _soft_ramp(np.clip(efhl, 0.0, None), 75.0, 300.0))
+
+    hail = arr("hail_surface")
+    if hail is not None:
+        core_support = np.maximum(core_support, 0.60 * _soft_ramp(np.clip(hail, 0.0, None), 5.0, 25.0))
+
+    gust = arr("gust_surface")
+    if gust is not None:
+        weak_support = np.maximum(weak_support, 0.20 * _soft_ramp(gust, 20.0, 35.0))
+
+    support = np.maximum(
+        weak_support,
+        np.maximum(
+            core_support,
+            np.sqrt(np.clip(core_support * rotation_support, 0.0, 1.0)),
+        ),
+    )
+    if np.nanmax(support) <= 0.0:
+        return support.astype(np.float32)
+
+    # Lightly spread only around storm cores. Larger spreading is handled by the
+    # map renderer, and too much here turns storm corridors into outlook blobs.
+    support = gaussian_filter(support, sigma=2.0)
+    return np.clip(support, 0.0, 1.0).astype(np.float32)
+
+
+def _tornado_environment_support(
+    cape_ml: np.ndarray,
+    cin_ml: np.ndarray,
+    hlcy_3km: np.ndarray,
+    vwsh: np.ndarray,
+    lcl_m: np.ndarray,
+) -> np.ndarray:
+    """Score whether the environment near a storm is tornado-capable."""
+    cape_term = _soft_ramp(np.clip(cape_ml, 0.0, None), 100.0, 1000.0)
+    srh_term = _soft_ramp(np.clip(hlcy_3km, 0.0, None), 40.0, 150.0)
+    shear_term = _soft_ramp(np.clip(vwsh, 0.0, None), 7.0, 18.0)
+    lcl_term = np.clip((1800.0 - lcl_m.astype(np.float64)) / 1100.0, 0.0, 1.0)
+    cin_term = np.clip((150.0 + cin_ml.astype(np.float64)) / 125.0, 0.0, 1.0)
+
+    env = cape_term * lcl_term * cin_term * np.sqrt(np.clip(srh_term * shear_term, 0.0, 1.0))
+    env = gaussian_filter(env, sigma=4.0)
+    return np.clip(env, 0.0, 1.0).astype(np.float32)
+
+
+def _apply_storm_gate(
+    probs: np.ndarray,
+    support: np.ndarray,
+    env_support: np.ndarray | None = None,
+) -> np.ndarray:
+    """
+    Cap calibrated tornado probabilities by observed/model storm support.
+
+    This keeps the model from producing operationally impossible high
+    probabilities where the environment is favorable but convection is absent.
+    """
+    probs = np.clip(probs.astype(np.float64), 0.0, 1.0)
+    if env_support is None:
+        env_support_arr = np.ones_like(probs, dtype=np.float64)
+    else:
+        env_support_arr = np.clip(env_support.astype(np.float64), 0.0, 1.0)
+    effective_support = np.clip(support.astype(np.float64), 0.0, 1.0) * np.clip(
+        0.35 + 0.80 * env_support_arr,
+        0.0,
+        1.0,
+    )
+
+    # Keep a broad low-end environment envelope for SPC/Nadocast-style 2%
+    # outlook areas, but only around modeled convection. The raw environment
+    # model can be right about ingredients yet wrong operationally when storms
+    # never form, so unsupported environment risk stays below display threshold.
+    smoothed_probs = gaussian_filter(probs, sigma=8.0)
+    near_storm = gaussian_filter(effective_support, sigma=6.0)
+    environment_envelope = np.where(
+        (near_storm >= 0.06) & (env_support_arr >= 0.12) & (smoothed_probs >= 0.038),
+        np.clip((smoothed_probs - 0.016) * 0.58, 0.0, 0.025),
+        0.0,
+    )
+
+    if np.nanmax(effective_support) <= 0.0:
+        return environment_envelope.astype(np.float32)
+
+    caps = np.interp(
+        effective_support,
+        [0.00, 0.20, 0.45, 0.70, 0.90, 1.00],
+        [0.001, 0.006, 0.022, 0.060, 0.120, 0.220],
+    )
+    storm_supported = np.minimum(probs, caps)
+    storm_supported *= np.clip(0.35 + 0.70 * effective_support, 0.0, 1.0)
+
+    # Above the 2% outlook envelope, probabilities must be attached to modeled
+    # storms. This keeps broad environmental risk from becoming false 5-15% blobs.
+    combined = np.maximum(environment_envelope, storm_supported)
+    return np.clip(combined, 0.0, 0.30).astype(np.float32)
+
+
 class TornadoProbabilityPredictor:
     """Wraps a trained LightGBM + isotonic calibration bundle."""
 
-    def __init__(self, model_path: Path = _DEFAULT_MODEL_PATH):
+    def __init__(self, model_path: Path | str | None = None):
+        model_path = Path(model_path) if model_path is not None else _DEFAULT_MODEL_PATH
         if not model_path.exists():
             raise FileNotFoundError(
                 f"No trained model found at {model_path}. "
@@ -95,12 +245,18 @@ class TornadoProbabilityPredictor:
                 return np.full(np.asarray(ref.values).shape, default, dtype=np.float64)
             return np.asarray(da.values, dtype=np.float64)
 
+        def optional_v(name: str) -> Optional[np.ndarray]:
+            da = fields.get(name)
+            if da is None:
+                return None
+            return np.asarray(da.values, dtype=np.float64)
+
         cape_ml    = v("cape_ml")
         original_shape = cape_ml.shape
 
         cin_ml     = v("cin_ml")
         hlcy_3km   = v("hlcy_3km")
-        vwsh       = v("vwsh_0_6km")
+        vwsh_arr   = optional_v("vwsh_0_6km")
         tmp_2m     = v("tmp_2m")
         dpt_2m     = v("dpt_2m")
         cape_sfc   = v("cape_surface")
@@ -108,9 +264,31 @@ class TornadoProbabilityPredictor:
         cin_sfc    = v("cin_surface")
         ugrd_10m   = v("ugrd_10m")
         vgrd_10m   = v("vgrd_10m")
-        ugrd_850   = v("ugrd_850", 0.0)
-        vgrd_850   = v("vgrd_850", 0.0)
-        bwd_850_sfc = np.hypot(ugrd_850 - ugrd_10m, vgrd_850 - vgrd_10m)
+        ugrd_850   = optional_v("ugrd_850")
+        vgrd_850   = optional_v("vgrd_850")
+        ugrd_hi_proxy = optional_v("ugrd_pbl")
+        vgrd_hi_proxy = optional_v("vgrd_pbl")
+        if ugrd_hi_proxy is None:
+            ugrd_hi_proxy = optional_v("ugrd_80m")
+        if vgrd_hi_proxy is None:
+            vgrd_hi_proxy = optional_v("vgrd_80m")
+
+        if vwsh_arr is not None:
+            vwsh = vwsh_arr
+        elif ugrd_hi_proxy is not None and vgrd_hi_proxy is not None:
+            shallow_shear = np.hypot(ugrd_hi_proxy - ugrd_10m, vgrd_hi_proxy - vgrd_10m)
+            vwsh = np.clip(shallow_shear * 2.0, 0.0, 35.0)
+        else:
+            logger.warning("calibrated_predictor: no usable bulk-shear field; using conservative 6 m/s default")
+            vwsh = np.full(original_shape, 6.0, dtype=np.float64)
+
+        if ugrd_850 is not None and vgrd_850 is not None:
+            bwd_850_sfc = np.hypot(ugrd_850 - ugrd_10m, vgrd_850 - vgrd_10m)
+        elif ugrd_hi_proxy is not None and vgrd_hi_proxy is not None:
+            shallow_shear = np.hypot(ugrd_hi_proxy - ugrd_10m, vgrd_hi_proxy - vgrd_10m)
+            bwd_850_sfc = np.clip(shallow_shear * 2.0, 0.0, 35.0)
+        else:
+            bwd_850_sfc = np.full(original_shape, 6.0, dtype=np.float64)
 
         # TC component terms
         lcl_m    = 122.0 * np.clip(tmp_2m - dpt_2m, 0.0, None)
@@ -218,16 +396,27 @@ class TornadoProbabilityPredictor:
         )
 
         raw_scores = self._lgbm.predict_proba(X)[:, 1]
-        cal_probs  = self._calibrator.predict(raw_scores).astype(np.float32)
-        return cal_probs.reshape(original_shape)
+        cal_probs  = self._calibrator.predict(raw_scores).astype(np.float32).reshape(original_shape)
+        support = _convective_support(fields, original_shape)
+        env_support = _tornado_environment_support(cape_ml, cin_ml, hlcy_3km, vwsh, lcl_m)
+        gated_probs = _apply_storm_gate(cal_probs, support, env_support)
+        if np.nanmax(cal_probs) > 0.25 and np.nanmax(gated_probs) < np.nanmax(cal_probs) * 0.5:
+            logger.info(
+                "Storm gate reduced max ML probability from %.1f%% to %.1f%%",
+                float(np.nanmax(cal_probs)) * 100.0,
+                float(np.nanmax(gated_probs)) * 100.0,
+            )
+        return gated_probs
 
 
 # Module-level singleton — loaded once, reused across forecast hours
 _predictor: Optional[TornadoProbabilityPredictor] = None
 
 
-def get_predictor(model_path: Path = _DEFAULT_MODEL_PATH) -> TornadoProbabilityPredictor:
+def get_predictor(model_path: Path | str | None = None) -> TornadoProbabilityPredictor:
     global _predictor
-    if _predictor is None:
+    resolved = Path(model_path) if model_path is not None else _DEFAULT_MODEL_PATH
+    if _predictor is None or getattr(_predictor, "_model_path", None) != resolved:
         _predictor = TornadoProbabilityPredictor(model_path)
+        _predictor._model_path = resolved
     return _predictor

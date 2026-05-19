@@ -32,7 +32,8 @@ _HRRR_BASE = "https://noaa-hrrr-bdp-pds.s3.amazonaws.com"
 _LABEL_RADIUS_KM = 40.0
 _LABEL_RADIUS_DEG = _LABEL_RADIUS_KM / 111.0
 
-# 4-hour label window per cycle — balanced between base rate and spatial specificity.
+# 4-hour label window — captures the typical supercell tornado threat period
+# and provides enough positive examples per event for good temporal discrimination.
 _LABEL_WINDOW_HOURS = 4
 
 # HRRR native grid spacing (~3 km). Used to convert spatial scale → Gaussian sigma in pixels.

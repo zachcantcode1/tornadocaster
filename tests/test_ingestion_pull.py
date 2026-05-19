@@ -1,10 +1,12 @@
 import asyncio
 import os
 import tempfile
+import pytest
 import xarray as xr
 import numpy as np
 from src.ingestion.noaa_fetcher import NOAAIndexFetcher
 
+@pytest.mark.asyncio
 async def test_small_pull():
     base_url = "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20240516/conus/hrrr.t00z.wrfsfcf01.grib2"
     idx_url = f"{base_url}.idx"

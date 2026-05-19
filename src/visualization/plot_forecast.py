@@ -155,6 +155,7 @@ def plot_conus_forecast(
     dpi: int = 150,
     mxuphl: Optional[np.ndarray] = None,
     prob_mode: bool = False,
+    report_points: list[tuple[float, float]] | None = None,
 ) -> str:
     """
     Render the tornado composite on a Lambert Conformal CONUS map.
@@ -184,7 +185,7 @@ def plot_conus_forecast(
     # features — use light smoothing (sigma=4, ~12km) to remove speckle only.
     # TC composite mode: heavier smoothing (sigma=15, ~45km) needed since
     # the physics index is deterministic and noisy at cell scale.
-    sigma = 10 if prob_mode else 15
+    sigma = 4 if prob_mode else 15
     stp_smooth = gaussian_filter(stp.astype(np.float64), sigma=sigma)
     stp_smooth = np.clip(stp_smooth, 0.0, 10.0)
 
@@ -212,9 +213,10 @@ def plot_conus_forecast(
 
     # ── MXUPHL hatching — gated inside threat zones only ────────────────────
     min_thresh = levels[0]
+    hatch_prob_thresh = 0.05 if prob_mode else min_thresh
     if mxuphl is not None and mxuphl.shape == stp.shape:
         uh_smooth  = gaussian_filter(mxuphl.astype(np.float64), sigma=8)
-        hatch_zone = np.where((uh_smooth >= 5.0) & (stp_smooth >= min_thresh), 1.0, np.nan)
+        hatch_zone = np.where((uh_smooth >= 50.0) & (stp_smooth >= hatch_prob_thresh), 1.0, np.nan)
         hatch_mask = np.ma.masked_invalid(hatch_zone)
         ax.contourf(
             lon, lat, hatch_mask,
@@ -245,11 +247,29 @@ def plot_conus_forecast(
         if np.any(stp_smooth >= thresh)
     ]
     if mxuphl is not None and np.any(
-        (gaussian_filter(mxuphl.astype(np.float64), sigma=8) >= 5.0) & (stp_smooth >= min_thresh)
+        (gaussian_filter(mxuphl.astype(np.float64), sigma=8) >= 50.0) & (stp_smooth >= hatch_prob_thresh)
     ):
         legend_handles.append(mpatches.Patch(
             facecolor="none", edgecolor="#444444", hatch="//",
             label="Rotating updraft (MXUPHL)",
+        ))
+    if report_points:
+        report_lats = [p[0] for p in report_points]
+        report_lons = [p[1] for p in report_points]
+        ax.scatter(
+            report_lons,
+            report_lats,
+            s=28,
+            marker="o",
+            facecolor="#ff2d2d",
+            edgecolor="#111111",
+            linewidth=0.55,
+            transform=data_crs,
+            zorder=6,
+        )
+        legend_handles.append(mpatches.Patch(
+            facecolor="#ff2d2d", edgecolor="#111111", linewidth=0.55,
+            label="Tornado report",
         ))
     ax.legend(
         handles=legend_handles,
