@@ -1,239 +1,102 @@
-"""
-Forecast visualization: tornado composite map on CONUS Lambert Conformal projection.
-"""
+"""Forecast visualization for NADOCast probability grids."""
 from __future__ import annotations
 
 import logging
 from typing import Optional
 
-import numpy as np
-import xarray as xr
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-import cartopy.crs as ccrs
-import cartopy.feature as cfeature
-from scipy.ndimage import gaussian_filter
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# TC composite index thresholds (physics mode, no ML model)
-_TC_LEVELS = [1.0, 2.0, 3.0, 5.0, 8.0]
-_TC_COLORS = [
-    "#7dc57d",  # 1–2   marginal   light green
-    "#f5f540",  # 2–3   slight     yellow
-    "#e8a030",  # 3–5   enhanced   orange
-    "#e03030",  # 5–8   moderate   red
-    "#e030e0",  # 8+    high       magenta
-]
-
-# Calibrated probability levels — matches SPC/Nadocast outlook thresholds
-_PROB_LEVELS = [0.02, 0.05, 0.10, 0.15, 0.30, 0.45, 0.60]
+_PROB_LEVELS = [0.01, 0.02, 0.03, 0.05, 0.10, 0.15, 0.30, 0.45, 0.60, 1.0]
 _PROB_COLORS = [
-    "#008b00",  # 2–5%    dark green
-    "#8b4500",  # 5–10%   brown
-    "#ffff00",  # 10–15%  yellow
-    "#ffa500",  # 15–30%  orange
-    "#ff0000",  # 30–45%  red
-    "#ff00ff",  # 45–60%  magenta
-    "#912cee",  # 60%+    purple
+    "#d0d0d0",  # 1-2%
+    "#008000",  # 2-3%
+    "#32cd32",  # 3-5%
+    "#8b4513",  # 5-10%
+    "#ffd400",  # 10-15%
+    "#ff2020",  # 15-30%
+    "#ff33ff",  # 30-45%
+    "#9b35e6",  # 45-60%
+    "#1f4e79",  # 60%+
 ]
-_PROB_LABELS = ["2%", "5%", "10%", "15%", "30%", "45%", "60%"]
-
-
-def compute_tornado_composite(fields: dict[str, xr.DataArray]) -> Optional[np.ndarray]:
-    """
-    RRFS Tornado Composite Index.
-
-    Builds on the SPC STP formula but uses RRFS-native fields when available:
-      - LCL height: direct from model (HGT:level of adiabatic condensation from sfc)
-        rather than the T2m-Td2m approximation used for HRRR.
-      - MXUPHL gate: max updraft helicity > threshold confirms rotating updraft.
-      - Fallback: standard STP formula when RRFS-specific fields are absent (HRRR mode).
-
-    Formula:
-        TC = (MLCAPE/1500) * lcl_term * cin_term * (SRH/150) * bwd_term * uh_gate
-
-    Returns float32 array clipped to [0, 10], or None if required fields are missing.
-    """
-    cape_ml = fields.get("cape_ml")
-    cin_ml  = fields.get("cin_ml")
-    hlcy    = fields.get("hlcy_3km")
-
-    if cape_ml is None or cin_ml is None or hlcy is None:
-        logger.warning("compute_tornado_composite: missing required field(s) — returning None")
-        return None
-
-    cape_v = np.asarray(cape_ml.values, dtype=np.float64)
-    cin_v  = np.asarray(cin_ml.values,  dtype=np.float64)
-    hlcy_v = np.asarray(hlcy.values,    dtype=np.float64)
-
-    # ── LCL height term ─────────────────────────────────────────────────────
-    # Prefer direct model output; fall back to Bolton (1980) T2m-Td2m estimate.
-    hgt_lcl = fields.get("hgt_lcl")
-    if hgt_lcl is not None:
-        lcl_m = np.asarray(hgt_lcl.values, dtype=np.float64)
-        lcl_m = np.clip(lcl_m, 0.0, None)
-        logger.debug("Using model-native LCL height field.")
-    else:
-        t2m  = fields.get("tmp_2m")
-        td2m = fields.get("dpt_2m")
-        if t2m is not None and td2m is not None:
-            lcl_m = 122.0 * np.clip(
-                np.asarray(t2m.values,  dtype=np.float64) -
-                np.asarray(td2m.values, dtype=np.float64),
-                0.0, None,
-            )
-        else:
-            lcl_m = np.zeros_like(cape_v)
-
-    lcl_term = np.clip((2000.0 - lcl_m) / 1000.0, 0.0, 1.0)
-
-    # ── CIN gating ──────────────────────────────────────────────────────────
-    cin_term = np.where(cin_v < -50.0, 0.0, np.clip((200.0 + cin_v) / 150.0, 0.0, 1.0))
-
-    # ── BWD term ─────────────────────────────────────────────────────────────
-    # RRFS hi file has no direct 0-6km shear field.
-    # Use VWSH:6000-0 m (HRRR) when present; otherwise derive a low-level shear
-    # proxy from 10m vs PBL winds and cap at 1.0 (conservative / max assumption).
-    bwd = fields.get("vwsh_0_6km")
-    if bwd is not None:
-        bwd_v = np.asarray(bwd.values, dtype=np.float64)
-        bwd_term = np.clip(bwd_v, 0.0, None) / 12.0
-    else:
-        ugrd_lo = fields.get("ugrd_10m")
-        vgrd_lo = fields.get("vgrd_10m")
-        _upbl = fields.get("ugrd_pbl")
-        ugrd_hi = _upbl if _upbl is not None else fields.get("ugrd_80m")
-        _vpbl = fields.get("vgrd_pbl")
-        vgrd_hi = _vpbl if _vpbl is not None else fields.get("vgrd_80m")
-        if (ugrd_lo is not None and vgrd_lo is not None and
-                ugrd_hi is not None and vgrd_hi is not None):
-            du = np.asarray(ugrd_hi.values, dtype=np.float64) - np.asarray(ugrd_lo.values, dtype=np.float64)
-            dv = np.asarray(vgrd_hi.values, dtype=np.float64) - np.asarray(vgrd_lo.values, dtype=np.float64)
-            # Scale the shallow shear to approximately 0-6km equivalent.
-            # 0-1km shear is typically ~40-60% of 0-6km BWD over the Plains.
-            bwd_term = np.clip(np.hypot(du, dv) / 7.0, 0.0, 1.0)
-        else:
-            # No wind data at all — assume climatological-average BWD (max term = 1.0).
-            bwd_term = np.ones_like(cape_v)
-
-    # ── Max updraft helicity gate ─────────────────────────────────────────────
-    # MXUPHL > 10 J/kg confirms a rotating updraft. Ramps from 1.0 → 1.5 as an
-    # enhancer where rotation is resolved; does not suppress where absent.
-    mxuphl = fields.get("mxuphl_03km")
-    if mxuphl is not None:
-        uh_v = np.clip(np.asarray(mxuphl.values, dtype=np.float64), 0.0, None)
-        uh_gate = np.clip(1.0 + 0.5 * (uh_v - 10.0) / 90.0, 1.0, 1.5)
-    else:
-        uh_gate = np.ones_like(cape_v)
-
-    # ── Reflectivity convective gate ─────────────────────────────────────────
-    # Suppress TC composite where no storm signal exists. Without this gate,
-    # high-CAPE/high-SRH environments produce large false-alarm blobs on days
-    # where convection never initiates. Floor at 0.05 preserves faint background
-    # signal. Available for HRRR and RRFS after catalog update.
-    refc = fields.get("refc_atm")
-    if refc is not None:
-        refc_v = np.asarray(refc.values, dtype=np.float64)
-        refc_smooth = gaussian_filter(refc_v, sigma=4.0)
-        refc_gate = np.clip((refc_smooth - 15.0) / 25.0, 0.05, 1.0)
-    else:
-        refc_gate = np.ones_like(cape_v)
-
-    composite = (
-        np.clip(cape_v, 0.0, None) / 1500.0
-        * lcl_term
-        * cin_term
-        * np.clip(hlcy_v, 0.0, None) / 150.0
-        * bwd_term
-        * uh_gate
-        * refc_gate
-    )
-    return np.clip(composite, 0.0, 10.0).astype(np.float32)
-
-
-# Keep old name as alias so any existing test imports still work.
-def compute_stp(fields: dict[str, xr.DataArray]) -> Optional[np.ndarray]:
-    return compute_tornado_composite(fields)
+_LEGEND_LABELS = ["1%", "2%", "3%", "5%", "10%", "15%", "30%", "45%", "60%"]
 
 
 def plot_conus_forecast(
     lat: np.ndarray,
     lon: np.ndarray,
     stp: np.ndarray,
-    title: str = "Tornado Forecast",
+    title: str = "NADOCast Forecast",
     subtitle: str = "",
     output_path: str = "forecast.png",
     dpi: int = 150,
     mxuphl: Optional[np.ndarray] = None,
-    prob_mode: bool = False,
+    prob_mode: bool = True,
     report_points: list[tuple[float, float]] | None = None,
+    map_style: str = "dark",
 ) -> str:
-    """
-    Render the tornado composite on a Lambert Conformal CONUS map.
+    """Render a CONUS probability map.
 
-    When *mxuphl* is provided (RRFS MXUPHL 0-3km grid), areas with
-    MXUPHL >= 25 J/kg are overlaid with black diagonal hatching to indicate
-    resolved rotating updrafts — analogous to the EF2+ hatching on Nadocast.
-
-    Returns the resolved output path.
+    The parameter names keep backward compatibility with the old CLI, but the
+    data is expected to be a probability fraction in the range `0.0-1.0`.
     """
-    proj     = ccrs.LambertConformal(central_longitude=-96, central_latitude=39)
+    del prob_mode  # Probability mode is now the only supported rendering mode.
+    proj = ccrs.LambertConformal(central_longitude=-96, central_latitude=39)
     data_crs = ccrs.PlateCarree()
+    style = _style_tokens(map_style)
 
     fig = plt.figure(figsize=(16, 9), dpi=dpi)
-    ax  = fig.add_subplot(1, 1, 1, projection=proj)
+    ax = fig.add_subplot(1, 1, 1, projection=proj)
     ax.set_extent([-125, -66, 22, 50], crs=data_crs)
 
-    ax.add_feature(cfeature.LAND.with_scale("50m"),    facecolor="#f8f8f2", zorder=0)
-    ax.add_feature(cfeature.OCEAN.with_scale("50m"),   facecolor="#e8eef2", zorder=0)
-    ax.add_feature(cfeature.LAKES.with_scale("50m"),   facecolor="#e8eef2", zorder=1)
-    ax.add_feature(cfeature.STATES.with_scale("50m"),  edgecolor="#aaaaaa", linewidth=0.5, zorder=2)
-    ax.add_feature(cfeature.BORDERS.with_scale("50m"), edgecolor="#666666", linewidth=0.8, zorder=2)
-    ax.add_feature(cfeature.COASTLINE.with_scale("50m"), edgecolor="#555555", linewidth=0.6, zorder=2)
+    ax.add_feature(cfeature.OCEAN.with_scale("50m"), facecolor=style["water"], zorder=0)
+    ax.add_feature(cfeature.LAND.with_scale("50m"), facecolor=style["land"], zorder=0)
+    ax.add_feature(
+        cfeature.LAKES.with_scale("50m"),
+        facecolor=style["water"],
+        edgecolor=style["lake_edge"],
+        linewidth=0.35,
+        zorder=1,
+    )
 
-    # ── Smooth the raw 3km field ─────────────────────────────────────────────
-    # ML mode: model already encodes 25-50km spatial context via gradient
-    # features — use light smoothing (sigma=4, ~12km) to remove speckle only.
-    # TC composite mode: heavier smoothing (sigma=15, ~45km) needed since
-    # the physics index is deterministic and noisy at cell scale.
-    sigma = 4 if prob_mode else 15
-    stp_smooth = gaussian_filter(stp.astype(np.float64), sigma=sigma)
-    stp_smooth = np.clip(stp_smooth, 0.0, 10.0)
-
-    # ── Filled contours — SPC/Nadocast color style ───────────────────────────
-    levels = _PROB_LEVELS if prob_mode else _TC_LEVELS
-    colors = _PROB_COLORS if prob_mode else _TC_COLORS
+    probability = np.clip(np.asarray(stp, dtype=np.float64), 0.0, 1.0)
 
     ax.contourf(
-        lon, lat, stp_smooth,
-        levels=levels,
-        colors=colors,
-        extend="max",
+        lon,
+        lat,
+        probability,
+        levels=_PROB_LEVELS,
+        colors=_style_probability_colors(style),
         transform=data_crs,
-        zorder=3,
-        alpha=0.90,
+        zorder=2,
     )
     ax.contour(
-        lon, lat, stp_smooth,
-        levels=levels,
-        colors=["#222222"],
-        linewidths=[0.6],
+        lon,
+        lat,
+        probability,
+        levels=_PROB_LEVELS[:-1],
+        colors=[style["threat_line"]],
+        linewidths=[0.55],
         transform=data_crs,
         zorder=3,
     )
 
-    # ── MXUPHL hatching — gated inside threat zones only ────────────────────
-    min_thresh = levels[0]
-    hatch_prob_thresh = 0.05 if prob_mode else min_thresh
-    if mxuphl is not None and mxuphl.shape == stp.shape:
-        uh_smooth  = gaussian_filter(mxuphl.astype(np.float64), sigma=8)
-        hatch_zone = np.where((uh_smooth >= 50.0) & (stp_smooth >= hatch_prob_thresh), 1.0, np.nan)
-        hatch_mask = np.ma.masked_invalid(hatch_zone)
+    ax.add_feature(cfeature.STATES.with_scale("50m"), edgecolor=style["state"], linewidth=0.65, zorder=6)
+    ax.add_feature(cfeature.BORDERS.with_scale("50m"), edgecolor=style["border"], linewidth=0.9, zorder=7)
+    ax.add_feature(cfeature.COASTLINE.with_scale("50m"), edgecolor=style["coast"], linewidth=0.75, zorder=7)
+
+    if mxuphl is not None and mxuphl.shape == probability.shape:
+        hatch_zone = np.where((mxuphl.astype(np.float64) >= 50.0) & (probability >= 0.05), 1.0, np.nan)
         ax.contourf(
-            lon, lat, hatch_mask,
+            lon,
+            lat,
+            np.ma.masked_invalid(hatch_zone),
             levels=[0.5, 1.5],
             hatches=["//"],
             colors=["none"],
@@ -241,32 +104,6 @@ def plot_conus_forecast(
             zorder=4,
         )
 
-    # ── Legend — only show levels that actually appear in this run ────────────
-    import matplotlib.patches as mpatches
-    if prob_mode:
-        level_labels = [(f"≥ {lbl}  tornado probability", thresh)
-                        for lbl, thresh in zip(_PROB_LABELS, _PROB_LEVELS)]
-    else:
-        level_labels = [
-            ("TC ≥ 1  Marginal",  1.0),
-            ("TC ≥ 2  Slight",    2.0),
-            ("TC ≥ 3  Enhanced",  3.0),
-            ("TC ≥ 5  Moderate",  5.0),
-            ("TC ≥ 8  High",      8.0),
-        ]
-
-    legend_handles = [
-        mpatches.Patch(facecolor=c, edgecolor="#555555", linewidth=0.5, label=lbl)
-        for (lbl, thresh), c in zip(level_labels, colors)
-        if np.any(stp_smooth >= thresh)
-    ]
-    if mxuphl is not None and np.any(
-        (gaussian_filter(mxuphl.astype(np.float64), sigma=8) >= 50.0) & (stp_smooth >= hatch_prob_thresh)
-    ):
-        legend_handles.append(mpatches.Patch(
-            facecolor="none", edgecolor="#444444", hatch="//",
-            label="Rotating updraft (MXUPHL)",
-        ))
     if report_points:
         report_lats = [p[0] for p in report_points]
         report_lons = [p[1] for p in report_points]
@@ -281,26 +118,101 @@ def plot_conus_forecast(
             transform=data_crs,
             zorder=6,
         )
-        legend_handles.append(mpatches.Patch(
-            facecolor="#ff2d2d", edgecolor="#111111", linewidth=0.55,
-            label="Tornado report",
-        ))
-    ax.legend(
-        handles=legend_handles,
-        loc="lower left", fontsize=8,
-        framealpha=0.9, frameon=True,
-        edgecolor="#cccccc",
-        borderpad=0.7,
-    )
 
-    ax.set_title(title,    fontsize=13, fontweight="bold", loc="left",  pad=6, color="#111111")
-    ax.set_title(subtitle, fontsize=9,  fontweight="normal", loc="right", pad=6, color="#555555")
+    _draw_nadocast_legend(fig, style, float(np.nanmax(probability)))
 
-    fig.patch.set_facecolor("#ffffff")
-    ax.set_facecolor("#e8eef2")
+    ax.set_title(title, fontsize=13, fontweight="bold", loc="left", pad=6, color=style["title"])
+    ax.set_title(subtitle, fontsize=9, fontweight="normal", loc="right", pad=6, color=style["subtitle"])
+
+    fig.patch.set_facecolor(style["figure"])
+    ax.set_facecolor(style["water"])
 
     plt.tight_layout(pad=0.5)
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close(fig)
     logger.info("Saved forecast plot to %s", output_path)
     return output_path
+
+
+def _draw_nadocast_legend(fig: plt.Figure, style: dict[str, str], max_probability: float) -> None:
+    """Draw a compact NADOCast-style threshold swatch legend."""
+    legend_ax = fig.add_axes([0.54, 0.055, 0.32, 0.055])
+    legend_ax.set_axis_off()
+    legend_ax.text(
+        0.0,
+        0.95,
+        "Chance of a tornado within 25 miles of a point.",
+        fontsize=8,
+        va="bottom",
+        color=style["legend_text"],
+    )
+
+    colors, labels = _legend_entries(max_probability)
+    n = len(colors)
+    for idx, color in enumerate(colors):
+        x0 = idx / n
+        legend_ax.add_patch(
+            plt.Rectangle((x0, 0.28), 1 / n, 0.36, facecolor=color, edgecolor=style["legend_edge"], linewidth=0.5)
+        )
+    for idx, label in enumerate(labels):
+        legend_ax.text((idx + 0.5) / n, 0.1, label, fontsize=7, ha="center", va="top", color=style["legend_text"])
+
+
+def _legend_entries(max_probability: float) -> tuple[list[str], list[str]]:
+    upper_idx = len(_PROB_COLORS) - 1
+    for idx, threshold in enumerate(_PROB_LEVELS[1:]):
+        if max_probability < threshold:
+            upper_idx = idx
+            break
+    upper_idx = max(2, upper_idx)
+    return _PROB_COLORS[: upper_idx + 1], _LEGEND_LABELS[: upper_idx + 1]
+
+
+def _style_tokens(map_style: str) -> dict[str, str]:
+    if map_style == "dark":
+        return {
+            "figure": "#0b1016",
+            "land": "#151b22",
+            "water": "#08111a",
+            "lake_edge": "#304455",
+            "state": "#75828e",
+            "border": "#aeb8c1",
+            "coast": "#aeb8c1",
+            "threat_line": "#05080b",
+            "title": "#eef4f8",
+            "subtitle": "#b8c3cc",
+            "legend_text": "#eef4f8",
+            "legend_edge": "#0b1016",
+            "name": "dark",
+        }
+    return {
+        "figure": "#ffffff",
+        "land": "#fafaf6",
+        "water": "#dfe8ef",
+        "lake_edge": "#8a969e",
+        "state": "#5f666a",
+        "border": "#303438",
+        "coast": "#303438",
+        "threat_line": "#333333",
+        "title": "#111111",
+        "subtitle": "#555555",
+        "legend_text": "#111111",
+        "legend_edge": "#000000",
+        "name": "light",
+    }
+
+
+def _style_probability_colors(style: dict[str, str]) -> list[str | tuple[float, float, float, float]]:
+    if style["name"] != "dark":
+        return _PROB_COLORS
+    return [
+        (0.82, 0.82, 0.82, 0.46),  # 1-2%
+        (0.00, 0.50, 0.00, 0.86),  # 2-3%
+        (0.20, 0.80, 0.20, 0.86),  # 3-5%
+        (0.55, 0.27, 0.07, 0.90),
+        (1.00, 0.83, 0.00, 0.92),
+        (1.00, 0.13, 0.13, 0.92),
+        (1.00, 0.20, 1.00, 0.92),
+        (0.61, 0.21, 0.90, 0.92),
+        (0.12, 0.31, 0.47, 0.92),
+    ]
