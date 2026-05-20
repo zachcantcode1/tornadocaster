@@ -30,8 +30,7 @@ data/
 logs/
 
 # Experimental model outputs
-models/*.pkl
-!models/tornado_lgbm.pkl
+models/
 
 # Shell session / local scripts output
 artifacts/
