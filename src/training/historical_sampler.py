@@ -20,6 +20,11 @@ from scipy.ndimage import gaussian_filter
 
 from src.ingestion.noaa_fetcher import NOAAIndexFetcher
 from src.features.derived import build_first_pass_derived_fields
+from src.features.nadocast_style import (
+    NADOCAST_STYLE_FEATURE_COLS,
+    add_nadocast_style_features,
+    stack_feature_columns,
+)
 from src.visualization.plot_forecast import compute_tornado_composite
 from src.training.climatology import get_climo_freq
 
@@ -43,6 +48,7 @@ _GRID_KM = 3.0
 HRRR_TRAINING_FIELDS = [
     ("cape_ml",      "CAPE",  "90-0 mb above ground"),
     ("cin_ml",       "CIN",   "90-0 mb above ground"),
+    ("cin_mu",       "CIN",   "180-0 mb above ground"),
     ("hlcy_3km",     "HLCY",  "3000-0 m above ground"),
     ("hlcy_1km",     "HLCY",  "1000-0 m above ground"),
     ("vwsh_0_6km",   "VWSH",  "6000-0 m above ground"),
@@ -53,13 +59,42 @@ HRRR_TRAINING_FIELDS = [
     ("cin_surface",  "CIN",   "surface"),
     ("ugrd_10m",     "UGRD",  "10 m above ground"),
     ("vgrd_10m",     "VGRD",  "10 m above ground"),
+    ("ugrd_80m",     "UGRD",  "80 m above ground"),
+    ("vgrd_80m",     "VGRD",  "80 m above ground"),
+    ("ugrd_925",     "UGRD",  "925 mb"),
+    ("vgrd_925",     "VGRD",  "925 mb"),
     ("ugrd_850",     "UGRD",  "850 mb"),
     ("vgrd_850",     "VGRD",  "850 mb"),
+    ("ugrd_700",     "UGRD",  "700 mb"),
+    ("vgrd_700",     "VGRD",  "700 mb"),
+    ("ugrd_500",     "UGRD",  "500 mb"),
+    ("vgrd_500",     "VGRD",  "500 mb"),
+    ("ugrd_250",     "UGRD",  "250 mb"),
+    ("vgrd_250",     "VGRD",  "250 mb"),
+    ("wind_10m",     "WIND",  "10 m above ground"),
+    ("wind_80m",     "WIND",  "80 m above ground"),
+    ("wind_925",     "WIND",  "925 mb"),
+    ("wind_850",     "WIND",  "850 mb"),
+    ("wind_250",     "WIND",  "250 mb"),
+    ("tmp_925",      "TMP",   "925 mb"),
+    ("tmp_850",      "TMP",   "850 mb"),
+    ("tmp_700",      "TMP",   "700 mb"),
+    ("tmp_500",      "TMP",   "500 mb"),
+    ("tmp_250",      "TMP",   "250 mb"),
+    ("dpt_925",      "DPT",   "925 mb"),
+    ("dpt_850",      "DPT",   "850 mb"),
+    ("dpt_700",      "DPT",   "700 mb"),
+    ("dpt_500",      "DPT",   "500 mb"),
+    ("rh_700",       "RH",    "700 mb"),
+    ("pwat",         "PWAT",  "entire atmosphere"),
+    ("refc_atm",     "REFC",  "entire atmosphere"),
+    ("mxuphl_03km",  "MXUPHL", "3000-0 m above ground"),
+    ("mxuphl_25km",  "MXUPHL", "5000-2000 m above ground"),
+    ("gust_surface", "GUST",  "surface"),
+    ("crain_surface", "CRAIN", "surface"),
 ]
 
-# Feature columns — 44 total
-# 19 base + 8 storm-physics composites + 7 gradients + 9 means + 2 geo + 3 temporal + 1 climo + 1 fhour
-FEATURE_COLS = [
+_CORE_FEATURE_COLS = [
     # Base thermodynamic / kinematic fields
     "cape_ml", "cin_ml", "hlcy_3km", "vwsh_0_6km",
     "tmp_2m", "dpt_2m", "cape_surface", "cape_mu", "cin_surface",
@@ -93,6 +128,13 @@ FEATURE_COLS = [
     "climo_freq",
     # Forecast lead time — lets model adjust for uncertainty at longer ranges.
     "fhour",
+]
+
+# Core operational features plus Nadocast-inspired expansion. The latter adds
+# motion-relative gradients, threshold probability proxies, upstream forcing,
+# and richer derived severe-weather terms.
+FEATURE_COLS = _CORE_FEATURE_COLS + [
+    c for c in NADOCAST_STYLE_FEATURE_COLS if c not in _CORE_FEATURE_COLS
 ]
 
 
@@ -249,48 +291,60 @@ def _extract_features(
     month = valid_start.month if valid_start is not None else 5
     climo = get_climo_freq(lat_grid.astype(np.float32), lon_grid.astype(np.float32), month).astype(np.float64)
 
-    cols = np.stack([
-        cape_ml, cin_ml, hlcy_3km, vwsh,
-        tmp_2m, dpt_2m, cape_sfc, cape_mu, cin_sfc,
-        ugrd_10m, vgrd_10m, bwd,
-        hlcy_1km,
-        np.clip(cape_ml, 0, None) / 1500.0,
-        lcl_term, cin_term, srh_term, bwd_term,
-        tc.astype(np.float64),
-        ehi_1km,
-        stp_fixed,
-        # gradients
-        cape_grad_25.astype(np.float64),
-        cape_grad_50.astype(np.float64),
-        hlcy_grad_25.astype(np.float64),
-        hlcy_grad_50.astype(np.float64),
-        cin_grad_25.astype(np.float64),
-        tmp_grad_25.astype(np.float64),
-        dpt_grad_25.astype(np.float64),
-        # neighborhood means
-        cape_mean_25.astype(np.float64),
-        cape_mean_50.astype(np.float64),
-        cape_mean_100.astype(np.float64),
-        hlcy_mean_25.astype(np.float64),
-        hlcy_mean_50.astype(np.float64),
-        cin_mean_25.astype(np.float64),
-        tmp_mean_25.astype(np.float64),
-        dpt_mean_25.astype(np.float64),
-        vwsh_mean_25.astype(np.float64),
-        # geographic position
-        lat_grid,
-        lon_grid,
-        # temporal (broadcast scalar to grid)
-        np.full((H, W), hour_utc),
-        np.full((H, W), doy_sin),
-        np.full((H, W), doy_cos),
-        # climatological tornado frequency
-        climo,
-        # forecast lead time
-        np.full((H, W), float(fhour)),
-    ], axis=-1)  # (H, W, 44)
-
-    return cols.reshape(N, len(FEATURE_COLS)).astype(np.float32)
+    feature_map = {
+        "cape_ml": cape_ml,
+        "cin_ml": cin_ml,
+        "hlcy_3km": hlcy_3km,
+        "vwsh_0_6km": vwsh,
+        "tmp_2m": tmp_2m,
+        "dpt_2m": dpt_2m,
+        "cape_surface": cape_sfc,
+        "cape_mu": cape_mu,
+        "cin_surface": cin_sfc,
+        "ugrd_10m": ugrd_10m,
+        "vgrd_10m": vgrd_10m,
+        "bwd_850_sfc": bwd,
+        "hlcy_1km": hlcy_1km,
+        "tc_cape_term": np.clip(cape_ml, 0, None) / 1500.0,
+        "tc_lcl_term": lcl_term,
+        "tc_cin_term": cin_term,
+        "tc_srh_term": srh_term,
+        "tc_bwd_term": bwd_term,
+        "tc_composite": tc.astype(np.float64),
+        "ehi_1km": ehi_1km,
+        "stp_fixed": stp_fixed,
+        "cape_ml_grad_25km": cape_grad_25.astype(np.float64),
+        "cape_ml_grad_50km": cape_grad_50.astype(np.float64),
+        "hlcy_3km_grad_25km": hlcy_grad_25.astype(np.float64),
+        "hlcy_3km_grad_50km": hlcy_grad_50.astype(np.float64),
+        "cin_ml_grad_25km": cin_grad_25.astype(np.float64),
+        "tmp_2m_grad_25km": tmp_grad_25.astype(np.float64),
+        "dpt_2m_grad_25km": dpt_grad_25.astype(np.float64),
+        "cape_ml_mean_25km": cape_mean_25.astype(np.float64),
+        "cape_ml_mean_50km": cape_mean_50.astype(np.float64),
+        "cape_ml_mean_100km": cape_mean_100.astype(np.float64),
+        "hlcy_3km_mean_25km": hlcy_mean_25.astype(np.float64),
+        "hlcy_3km_mean_50km": hlcy_mean_50.astype(np.float64),
+        "cin_ml_mean_25km": cin_mean_25.astype(np.float64),
+        "tmp_2m_mean_25km": tmp_mean_25.astype(np.float64),
+        "dpt_2m_mean_25km": dpt_mean_25.astype(np.float64),
+        "vwsh_mean_25km": vwsh_mean_25.astype(np.float64),
+        "lat": lat_grid,
+        "lon": lon_grid,
+        "hour_utc": np.full((H, W), hour_utc),
+        "doy_sin": np.full((H, W), doy_sin),
+        "doy_cos": np.full((H, W), doy_cos),
+        "climo_freq": climo,
+        "fhour": np.full((H, W), float(fhour)),
+    }
+    all_fields = {**fields, **derived}
+    feature_map = add_nadocast_style_features(
+        feature_map,
+        all_fields,
+        (H, W),
+        valid_dt=valid_start,
+    )
+    return stack_feature_columns(feature_map, FEATURE_COLS, (H, W))
 
 
 def _make_labels(

@@ -65,6 +65,11 @@ _HRRR_NEEDED = {
     "ugrd_10m", "vgrd_10m", "ugrd_80m", "vgrd_80m",
     "ugrd_500", "vgrd_500", "ugrd_850", "vgrd_850",
     "ugrd_925", "vgrd_925", "tmp_500", "tmp_700",
+    "ugrd_250", "vgrd_250", "ugrd_700", "vgrd_700",
+    "tmp_250", "tmp_850", "tmp_925",
+    "dpt_500", "dpt_700", "dpt_850", "dpt_925",
+    "rh_700", "pwat", "crain_surface",
+    "wind_10m", "wind_80m", "wind_250", "wind_850", "wind_925",
     "refc_atm", "mxuphl_03km", "mxuphl_25km", "gust_surface",
 }
 

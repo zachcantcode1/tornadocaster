@@ -205,13 +205,6 @@ def account_for_ordered_features(
     zero_fill = []
     proxy_source = {}
 
-    # Prefer a stable anchor for last-resort proxy behavior.
-    anchor = None
-    if "CAPE:surface:hour fcst:wt ens mean" in arrays:
-        anchor = "CAPE:surface:hour fcst:wt ens mean"
-    elif arrays:
-        anchor = next(iter(arrays.keys()))
-
     temporal_suffixes = [
         ":-1hr",
         ":+1hr",
@@ -275,9 +268,6 @@ def account_for_ordered_features(
             if c in arrays:
                 mapped = c
                 break
-        if mapped is None and anchor is not None:
-            mapped = anchor
-
         if mapped is not None:
             cols.append(arrays[mapped].astype(np.float32).reshape(-1))
             proxy.append(name)

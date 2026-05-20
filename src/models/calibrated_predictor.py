@@ -17,6 +17,8 @@ import numpy as np
 import xarray as xr
 from scipy.ndimage import gaussian_filter
 
+from src.features.derived import build_first_pass_derived_fields
+from src.features.nadocast_style import add_nadocast_style_features
 from src.training.climatology import get_climo_freq
 
 logger = logging.getLogger(__name__)
@@ -116,7 +118,7 @@ def _convective_support(fields: dict[str, xr.DataArray], shape: tuple[int, int])
 
     # Lightly spread only around storm cores. Larger spreading is handled by the
     # map renderer, and too much here turns storm corridors into outlook blobs.
-    support = gaussian_filter(support, sigma=2.0)
+    support = gaussian_filter(support, sigma=3.0)
     return np.clip(support, 0.0, 1.0).astype(np.float32)
 
 
@@ -167,9 +169,14 @@ def _apply_storm_gate(
     # never form, so unsupported environment risk stays below display threshold.
     smoothed_probs = gaussian_filter(probs, sigma=8.0)
     near_storm = gaussian_filter(effective_support, sigma=6.0)
+    envelope_cap = np.interp(
+        env_support_arr,
+        [0.12, 0.35, 0.65, 1.00],
+        [0.025, 0.040, 0.065, 0.090],
+    )
     environment_envelope = np.where(
-        (near_storm >= 0.06) & (env_support_arr >= 0.12) & (smoothed_probs >= 0.038),
-        np.clip((smoothed_probs - 0.016) * 0.58, 0.0, 0.025),
+        (near_storm >= 0.045) & (env_support_arr >= 0.12) & (smoothed_probs >= 0.032),
+        np.minimum(np.clip((smoothed_probs - 0.014) * 0.72, 0.0, None), envelope_cap),
         0.0,
     )
 
@@ -179,7 +186,7 @@ def _apply_storm_gate(
     caps = np.interp(
         effective_support,
         [0.00, 0.20, 0.45, 0.70, 0.90, 1.00],
-        [0.001, 0.006, 0.022, 0.060, 0.120, 0.220],
+        [0.001, 0.010, 0.038, 0.085, 0.155, 0.240],
     )
     storm_supported = np.minimum(probs, caps)
     storm_supported *= np.clip(0.35 + 0.70 * effective_support, 0.0, 1.0)
@@ -420,9 +427,23 @@ class TornadoProbabilityPredictor:
             "fhour":                np.full(original_shape, float(fhour), dtype=np.float32),
         }
 
+        try:
+            expanded_fields = {**fields, **build_first_pass_derived_fields(fields)}
+        except Exception:
+            expanded_fields = dict(fields)
+        feature_map = add_nadocast_style_features(
+            feature_map,
+            expanded_fields,
+            original_shape,
+            valid_dt=valid_dt,
+        )
+
         import pandas as pd
         X = pd.DataFrame(
-            {c: feature_map[c].ravel().astype(np.float32) for c in self._features}
+            {
+                c: feature_map.get(c, np.zeros(original_shape, dtype=np.float32)).ravel().astype(np.float32)
+                for c in self._features
+            }
         )
 
         raw_scores = self._lgbm.predict_proba(X)[:, 1]

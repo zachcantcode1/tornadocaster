@@ -81,4 +81,5 @@ def test_account_for_ordered_features_classifies_sources():
     assert matrix.shape == (2, 3)
     assert accounting["total"] == 3
     assert accounting["direct_count"] == 1
-    assert accounting["proxy_count"] >= 1
+    assert accounting["proxy_count"] == 1
+    assert accounting["zero_fill_count"] == 1

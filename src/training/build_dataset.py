@@ -79,8 +79,8 @@ async def process_day(
 async def main(years: list[int], out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Loading SPC storm reports for %s (EF1+ only) …", years)
-    reports = load_reports(years, min_ef=1)
+    logger.info("Loading SPC storm reports for %s (EF0+ tornadoes) …", years)
+    reports = load_reports(years, min_ef=0)
     reports["utc_time"] = pd.to_datetime(reports["utc_time"], utc=True)
 
     t_days = tornado_days(reports)

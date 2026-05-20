@@ -29,6 +29,10 @@ nadocast_upstream/
 data/
 logs/
 
+# Experimental model outputs
+models/*.pkl
+!models/tornado_lgbm.pkl
+
 # Shell session / local scripts output
 artifacts/
 
