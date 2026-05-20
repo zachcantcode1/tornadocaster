@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tora Weather — NADOCast Tornado Forecast Viewer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- Nav -->
+  <nav>
+    <div class="container">
+      <div class="nav-inner">
+        <a href="index.html" class="nav-logo">
+          <span class="nav-logo-dot"></span>
+          Tora Weather
+        </a>
+        <ul class="nav-links">
+          <li><a href="index.html" class="active">Forecast</a></li>
+          <li><a href="about.html">About</a></li>
+        </ul>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <header class="hero">
+    <div class="container">
+      <p class="hero-eyebrow">Live Forecast Output</p>
+      <h1 class="hero-title">Today's Severe Weather</h1>
+      <p class="hero-sub">
+        Published probability guidance from the NADOCast ML system. Probabilities represent
+        the likelihood of a tornado within 25&nbsp;miles of any grid point during the valid window.
+      </p>
+      <div class="hero-meta">
+        <span class="meta-chip">Model <span>NADOCast 2022</span></span>
+        <span class="meta-chip">Grid <span>~3km CONUS</span></span>
+        <span class="meta-chip">Valid <span id="meta-valid">—</span></span>
+        <span class="meta-chip">Updated <span id="meta-updated">—</span></span>
+      </div>
+
+      <!-- Risk legend -->
+      <div class="legend">
+        <div class="legend-item">
+          <span class="legend-swatch" style="background:#76b041"></span>
+          Marginal
+        </div>
+        <div class="legend-item">
+          <span class="legend-swatch" style="background:#f0c040"></span>
+          Slight
+        </div>
+        <div class="legend-item">
+          <span class="legend-swatch" style="background:#e87820"></span>
+          Enhanced
+        </div>
+        <div class="legend-item">
+          <span class="legend-swatch" style="background:#c83228"></span>
+          Moderate
+        </div>
+        <div class="legend-item">
+          <span class="legend-swatch" style="background:#c040c8"></span>
+          High
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <!-- Primary forecast map -->
+    <section class="forecast-section">
+      <div class="container">
+        <div class="section-header">
+          <div>
+            <p class="section-label">Primary Output</p>
+            <h2 class="section-title">CONUS Tornado Probability</h2>
+          </div>
+          <span class="badge" id="forecast-badge">Loading</span>
+        </div>
+
+        <div class="map-shell">
+          <div class="forecast-map" id="forecast-map" aria-label="Interactive US tornado probability map"></div>
+          <div class="map-status-panel" id="map-status">Loading forecast layer...</div>
+          <div class="map-controls" aria-label="Map display controls">
+            <button class="map-control-btn active" type="button" id="forecast-layer-toggle">Forecast</button>
+            <button class="map-control-btn" type="button" id="reset-map">US View</button>
+          </div>
+          <form class="map-search" id="zip-search" role="search" aria-label="ZIP code search">
+            <input
+              class="map-search-input"
+              id="zip-input"
+              name="zipcode"
+              type="search"
+              inputmode="numeric"
+              pattern="[0-9]{5}"
+              maxlength="5"
+              placeholder="ZIP code"
+              autocomplete="postal-code"
+              aria-label="ZIP code"
+            />
+            <button class="map-search-btn" type="submit">Go</button>
+            <span class="map-search-message" id="zip-search-message" role="status" aria-live="polite"></span>
+          </form>
+        </div>
+
+        <!-- Stats -->
+        <div class="stats-grid">
+          <div class="stat-card">
+            <span class="stat-label">Run Cycle</span>
+            <span class="stat-value" id="stat-run-cycle">—</span>
+            <span class="stat-sub">NADOCast initialization</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Max Probability</span>
+            <span class="stat-value" id="stat-max-prob">—</span>
+            <span class="stat-sub">Peak grid point</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Risk Area</span>
+            <span class="stat-value" id="stat-risk-area">—</span>
+            <span class="stat-sub">Grid points &gt; 2%</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Window</span>
+            <span class="stat-value" id="stat-window">—</span>
+            <span class="stat-sub">Forecast accumulation</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Data Source</span>
+            <span class="stat-value" id="stat-source">—</span>
+            <span class="stat-sub">data.nadocast.com</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider" />
+
+    <!-- Secondary outputs grid -->
+    <section class="forecast-section">
+      <div class="container">
+        <div class="section-header">
+          <div>
+            <p class="section-label">Additional Outputs</p>
+            <h2 class="section-title">Diagnostic Fields</h2>
+          </div>
+        </div>
+
+        <div class="outputs-grid">
+
+          <div class="output-card">
+            <div class="output-card-img">
+              <span class="output-card-img-icon">⊞</span>
+            </div>
+            <div class="output-card-body">
+              <p class="output-card-title">TC Composite</p>
+              <p class="output-card-desc">
+                Physics-based tornado composite index (CAPE × SRH × LCL × CIN × shear × MXUPHL).
+                Raw index before ML calibration.
+              </p>
+            </div>
+            <div class="output-card-foot">Placeholder — output pending</div>
+          </div>
+
+          <div class="output-card">
+            <div class="output-card-img">
+              <span class="output-card-img-icon">⊞</span>
+            </div>
+            <div class="output-card-body">
+              <p class="output-card-title">CAPE / SRH</p>
+              <p class="output-card-desc">
+                Storm-relative helicity and convective available potential energy fields
+                derived from RRFS-A 3km CONUS grib2.
+              </p>
+            </div>
+            <div class="output-card-foot">Placeholder — output pending</div>
+          </div>
+
+          <div class="output-card">
+            <div class="output-card-img">
+              <span class="output-card-img-icon">⊞</span>
+            </div>
+            <div class="output-card-body">
+              <p class="output-card-title">MXUPHL Hatching</p>
+              <p class="output-card-desc">
+                Max updraft helicity overlay, gated inside TC ≥ 1.0 zones.
+                Indicates discrete supercell mode.
+              </p>
+            </div>
+            <div class="output-card-foot">Placeholder — output pending</div>
+          </div>
+
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Footer -->
+  <footer>
+    <div class="container">
+      <div class="footer-inner">
+        <span class="footer-left">tora weather · homelab-optimized · RRFS-native</span>
+        <span class="footer-right">Not an official NWS product. For research use only.</span>
+      </div>
+    </div>
+  </footer>
+
+
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+  <script>
+    (async () => {
+      const badge = document.getElementById('forecast-badge');
+      const mapStatus = document.getElementById('map-status');
+      const layerToggle = document.getElementById('forecast-layer-toggle');
+      const resetMap = document.getElementById('reset-map');
+      const zipSearch = document.getElementById('zip-search');
+      const zipInput = document.getElementById('zip-input');
+      const zipMessage = document.getElementById('zip-search-message');
+
+      const usBounds = L.latLngBounds([23.5, -126.5], [50.5, -65.0]);
+      const map = L.map('forecast-map', {
+        zoomControl: true,
+        attributionControl: true,
+        maxBounds: usBounds.pad(0.18),
+        maxBoundsViscosity: 0.9,
+        minZoom: 3,
+        maxZoom: 9,
+        wheelPxPerZoomLevel: 140,
+        zoomSnap: 0.5,
+        zoomDelta: 0.5,
+        worldCopyJump: false,
+      });
+
+      map.createPane('labelPane');
+      map.getPane('labelPane').style.zIndex = 650;
+      map.getPane('labelPane').style.pointerEvents = 'none';
+      map.getPane('labelPane').classList.add('map-label-pane');
+      map.createPane('boundaryPane');
+      map.getPane('boundaryPane').style.zIndex = 640;
+      map.getPane('boundaryPane').style.pointerEvents = 'none';
+      map.getPane('boundaryPane').classList.add('map-boundary-pane');
+      map.createPane('stateLinePane');
+      map.getPane('stateLinePane').style.zIndex = 660;
+      map.getPane('stateLinePane').style.pointerEvents = 'none';
+
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; OpenStreetMap &copy; CARTO',
+        subdomains: 'abcd',
+        maxZoom: 20,
+      }).addTo(map);
+
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; OpenStreetMap &copy; CARTO',
+        subdomains: 'abcd',
+        maxZoom: 20,
+        pane: 'boundaryPane',
+      }).addTo(map);
+
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; OpenStreetMap &copy; CARTO',
+        subdomains: 'abcd',
+        maxZoom: 20,
+        pane: 'labelPane',
+      }).addTo(map);
+
+      fetch('https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json')
+        .then((res) => {
+          if (!res.ok) throw new Error(`State boundary HTTP ${res.status}`);
+          return res.json();
+        })
+        .then((states) => {
+          L.geoJSON(states, {
+            pane: 'stateLinePane',
+            interactive: false,
+            style: {
+              color: '#d8dde3',
+              weight: 1.05,
+              opacity: 0.62,
+              fillOpacity: 0,
+              lineCap: 'round',
+              lineJoin: 'round',
+            },
+          }).addTo(map);
+        })
+        .catch((err) => console.warn('State boundary load failed:', err));
+
+      map.fitBounds(usBounds, { padding: [8, 8] });
+      L.control.scale({ imperial: true, metric: false, position: 'bottomleft' }).addTo(map);
+
+      let forecastLayer = null;
+      let lookupMarker = null;
+      try {
+        const res = await fetch('/api/forecast');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const d = await res.json();
+
+        forecastLayer = L.geoJSON(d.probability_areas, {
+          style: (feature) => ({
+            color: feature.properties.color,
+            weight: 1,
+            opacity: 0.62,
+            fillColor: feature.properties.color,
+            fillOpacity: feature.properties.opacity,
+            lineJoin: 'round',
+            interactive: true,
+          }),
+          onEachFeature: (feature, layer) => {
+            layer.bindPopup(
+              `<strong>${feature.properties.label}</strong><span>Tornado probability</span>`,
+              { closeButton: false, className: 'forecast-popup' }
+            );
+            layer.on({
+              mouseover: () => layer.setStyle({ weight: 1.6, fillOpacity: Math.min(feature.properties.opacity + 0.1, 0.5) }),
+              mouseout: () => forecastLayer.resetStyle(layer),
+            });
+          },
+        }).addTo(map);
+
+        // Stats
+        document.getElementById('stat-run-cycle').textContent = d.run_cycle;
+        document.getElementById('stat-max-prob').textContent = d.max_probability;
+        document.getElementById('stat-risk-area').textContent = d.risk_area.toLocaleString();
+        document.getElementById('stat-window').textContent = d.window.toUpperCase();
+        document.getElementById('stat-source').textContent = d.data_source;
+
+        // Hero meta
+        document.getElementById('meta-valid').textContent = d.window.toUpperCase();
+        const dt = new Date(d.updated_iso);
+        document.getElementById('meta-updated').textContent =
+          dt.toLocaleTimeString('en-US', {hour: '2-digit', minute: '2-digit', timeZoneName: 'short'});
+
+        if (badge) badge.textContent = 'Live';
+        if (mapStatus) mapStatus.textContent = `${d.run_label || 'NADOCast'} · ${d.window.toUpperCase()}`;
+      } catch (err) {
+        console.error('Forecast load failed:', err);
+        if (mapStatus) mapStatus.textContent = 'Failed to load forecast';
+        if (badge) { badge.textContent = 'Error'; badge.style.color = '#c83228'; }
+      }
+
+      if (layerToggle) {
+        layerToggle.addEventListener('click', () => {
+          if (!forecastLayer) return;
+          const isVisible = map.hasLayer(forecastLayer);
+          if (isVisible) {
+            forecastLayer.remove();
+            layerToggle.classList.remove('active');
+          } else {
+            forecastLayer.addTo(map);
+            layerToggle.classList.add('active');
+          }
+        });
+      }
+
+      if (resetMap) {
+        resetMap.addEventListener('click', () => {
+          map.fitBounds(usBounds, { padding: [8, 8] });
+        });
+      }
+
+      if (zipSearch && zipInput) {
+        zipSearch.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          const zipcode = zipInput.value.trim();
+          if (!/^\d{5}$/.test(zipcode)) {
+            showZipError('Enter a valid 5-digit ZIP code.');
+            return;
+          }
+
+          setZipPending(true);
+          try {
+            const res = await fetch(`/api/zipcode/${zipcode}`);
+            const result = await res.json();
+            if (!res.ok) throw new Error(result.detail || `ZIP lookup failed (${res.status})`);
+
+            if (lookupMarker) lookupMarker.remove();
+            lookupMarker = L.circleMarker([result.lat, result.lon], {
+              radius: 7,
+              color: '#ffffff',
+              weight: 2,
+              opacity: 0.95,
+              fillColor: '#e87820',
+              fillOpacity: 0.95,
+            })
+              .addTo(map)
+              .bindPopup(
+                `<strong>${result.zip}</strong><span>${result.probability_label} tornado probability</span>`,
+                { closeButton: false, className: 'forecast-popup' }
+              );
+
+            map.flyTo([result.lat, result.lon], 9, { duration: 0.8 });
+            lookupMarker.openPopup();
+            zipSearch.dataset.status = '';
+          } catch (err) {
+            showZipError(err.message || 'ZIP not found');
+          } finally {
+            setZipPending(false);
+          }
+        });
+      }
+
+      function setZipPending(isPending) {
+        zipSearch?.classList.toggle('loading', isPending);
+      }
+
+      function showZipError(message) {
+        zipSearch.classList.add('invalid');
+        zipInput.setAttribute('aria-invalid', 'true');
+        zipMessage.textContent = message;
+        window.setTimeout(() => {
+          if (zipMessage.textContent === message) {
+            zipMessage.textContent = '';
+            zipSearch.classList.remove('invalid');
+            zipInput.removeAttribute('aria-invalid');
+          }
+        }, 3200);
+      }
+
+    })();
+  </script>
+
+</body>
+</html>

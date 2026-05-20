@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>About — Tora Weather</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- Nav -->
+  <nav>
+    <div class="container">
+      <div class="nav-inner">
+        <a href="index.html" class="nav-logo">
+          <span class="nav-logo-dot"></span>
+          Tora Weather
+        </a>
+        <ul class="nav-links">
+          <li><a href="index.html">Forecast</a></li>
+          <li><a href="about.html" class="active">About</a></li>
+        </ul>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <header class="about-hero">
+    <div class="container">
+      <p class="hero-eyebrow">About the Project</p>
+      <h1 class="hero-title">NADOCast-First Severe Weather Guidance</h1>
+      <p class="hero-sub">
+        A product layer for published NADOCast probability grids: custom maps,
+        summaries, local lookups, overlays, and run-to-run interpretation.
+      </p>
+    </div>
+  </header>
+
+  <main>
+    <div class="container">
+      <div class="about-layout">
+
+        <!-- Main prose -->
+        <article class="prose">
+
+          <h2>What is Tora Weather?</h2>
+          <p>
+            Tora Weather is a severe weather guidance viewer built around
+            <strong>NADOCast</strong> probability grids. Instead of recreating the
+            full machine-learning forecast pipeline, the active code treats published
+            NADOCast GRIB2 files as the source of truth and focuses on the product
+            layer around them.
+          </p>
+          <p>
+            The goal is to make those grids easier to use locally: render clear CONUS
+            maps, normalize probability values, summarize active risk areas, sample
+            nearest grid points, and compare runs as new guidance arrives.
+          </p>
+
+          <h2>Data Sources</h2>
+          <p>
+            The primary input is public <strong>NADOCast</strong> GRIB2 output fetched
+            from <code>data.nadocast.com</code>. The current workflow resolves matching
+            forecast files, downloads the selected hazard grid, and decodes it with
+            <code>cfgrib</code> and <code>xarray</code>.
+          </p>
+          <p>
+            Supported hazard tokens include <code>tornado</code>,
+            <code>sig_tornado</code>, <code>hail</code>, <code>sig_hail</code>,
+            <code>wind</code>, <code>sig_wind</code>, and <code>wind_adj</code>.
+            NADOCast percent grids are normalized into <code>0.0-1.0</code>
+            probabilities before analysis and rendering.
+          </p>
+
+          <h2>How the Forecast Pipeline Works</h2>
+          <div class="pipeline">
+            <div class="pipeline-step">
+              <span class="step-num">01</span>
+              <div class="step-content">
+                <p class="step-title">Resolve a NADOCast run</p>
+                <p class="step-desc">Find the latest matching run, or use an explicit date, cycle, and hazard requested from the command line.</p>
+              </div>
+            </div>
+            <div class="pipeline-step">
+              <span class="step-num">02</span>
+              <div class="step-content">
+                <p class="step-title">Fetch the public GRIB2 grid</p>
+                <p class="step-desc">Download the selected probability file from data.nadocast.com instead of building a forecast from raw model fields.</p>
+              </div>
+            </div>
+            <div class="pipeline-step">
+              <span class="step-num">03</span>
+              <div class="step-content">
+                <p class="step-title">Decode with cfgrib and xarray</p>
+                <p class="step-desc">Open the GRIB2 data into structured arrays that can be sampled, summarized, and plotted.</p>
+              </div>
+            </div>
+            <div class="pipeline-step">
+              <span class="step-num">04</span>
+              <div class="step-content">
+                <p class="step-title">Normalize probabilities</p>
+                <p class="step-desc">Convert NADOCast percent grids into 0.0-1.0 probabilities for consistent analysis.</p>
+              </div>
+            </div>
+            <div class="pipeline-step">
+              <span class="step-num">05</span>
+              <div class="step-content">
+                <p class="step-title">Analyze the grid</p>
+                <p class="step-desc">Generate probability summaries and nearest-point lookups for local interpretation.</p>
+              </div>
+            </div>
+            <div class="pipeline-step">
+              <span class="step-num">06</span>
+              <div class="step-content">
+                <p class="step-title">Render the map</p>
+                <p class="step-desc">Plot a CONUS probability map using the existing SPC/NADOCast-style color ramp.</p>
+              </div>
+            </div>
+            <div class="pipeline-step">
+              <span class="step-num">07</span>
+              <div class="step-content">
+                <p class="step-title">Interpret run-to-run changes</p>
+                <p class="step-desc">Future work should add source adapters and overlays around this simpler product layer.</p>
+              </div>
+            </div>
+          </div>
+
+          <h2>Current Scope</h2>
+          <p>
+            The active application fetches NADOCast GRIB2 files, decodes probability
+            grids, normalizes percent values, renders CONUS maps, and provides small
+            helpers for summaries and point sampling.
+          </p>
+          <p>
+            The previous model-building and training stack has been removed from the
+            active code path. Tora Weather is now a viewer and interpretation layer
+            for existing NADOCast guidance, not a replacement forecast model.
+          </p>
+
+          <h2>Tech Stack</h2>
+          <p>
+            Python · <code>cfgrib</code> · <code>xarray</code> ·
+            <code>matplotlib</code> / mapping utilities · NADOCast GRIB2
+          </p>
+
+        </article>
+
+        <!-- Sidebar -->
+        <aside class="about-sidebar">
+
+          <div class="sidebar-card">
+            <p class="sidebar-card-title">Current Mode</p>
+            <div class="perf-bar-wrap">
+              <div class="perf-bar-label">
+                <span>Source</span>
+                <span>NADOCast</span>
+              </div>
+              <div class="perf-bar">
+                <div class="perf-bar-fill" style="width: 100%"></div>
+              </div>
+            </div>
+            <div class="perf-bar-wrap">
+              <div class="perf-bar-label">
+                <span>Role</span>
+                <span>Viewer</span>
+              </div>
+              <div class="perf-bar">
+                <div class="perf-bar-fill" style="width: 80%; background: var(--slight)"></div>
+              </div>
+            </div>
+            <p style="font-size:11px;color:var(--dim);margin-top:8px;line-height:1.5;">
+              Published probability grids · local maps and summaries
+            </p>
+          </div>
+
+          <div class="sidebar-card">
+            <p class="sidebar-card-title">Stack</p>
+            <div class="sidebar-row">
+              <span class="sidebar-row-label">Language</span>
+              <span class="sidebar-row-value">Python 3.12</span>
+            </div>
+            <div class="sidebar-row">
+              <span class="sidebar-row-label">Decode</span>
+              <span class="sidebar-row-value">cfgrib/xarray</span>
+            </div>
+            <div class="sidebar-row">
+              <span class="sidebar-row-label">Output</span>
+              <span class="sidebar-row-value">forecast.png</span>
+            </div>
+            <div class="sidebar-row">
+              <span class="sidebar-row-label">Primary src</span>
+              <span class="sidebar-row-value">NADOCast</span>
+            </div>
+            <div class="sidebar-row">
+              <span class="sidebar-row-label">Map style</span>
+              <span class="sidebar-row-value">Dark/light</span>
+            </div>
+          </div>
+
+          <div class="sidebar-card">
+            <p class="sidebar-card-title">Hazards</p>
+            <div class="sidebar-row">
+              <span class="sidebar-row-label">Tornado</span>
+              <span class="sidebar-row-value">tornado</span>
+            </div>
+            <div class="sidebar-row">
+              <span class="sidebar-row-label">Sig tor</span>
+              <span class="sidebar-row-value">sig_tornado</span>
+            </div>
+            <div class="sidebar-row">
+              <span class="sidebar-row-label">Hail</span>
+              <span class="sidebar-row-value">hail</span>
+            </div>
+            <div class="sidebar-row">
+              <span class="sidebar-row-label">Sig hail</span>
+              <span class="sidebar-row-value">sig_hail</span>
+            </div>
+            <div class="sidebar-row">
+              <span class="sidebar-row-label">Wind</span>
+              <span class="sidebar-row-value">wind</span>
+            </div>
+            <div class="sidebar-row">
+              <span class="sidebar-row-label">Sig wind</span>
+              <span class="sidebar-row-value">sig_wind</span>
+            </div>
+            <div class="sidebar-row">
+              <span class="sidebar-row-label">Adj wind</span>
+              <span class="sidebar-row-value">wind_adj</span>
+            </div>
+          </div>
+
+          <div class="sidebar-card">
+            <p class="sidebar-card-title">Disclaimer</p>
+            <p style="font-size:12px;color:var(--muted);line-height:1.6;">
+              Not an official NWS or SPC product. For research and educational use only.
+              Do not use for life-safety decisions.
+            </p>
+          </div>
+
+        </aside>
+      </div>
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer>
+    <div class="container">
+      <div class="footer-inner">
+        <span class="footer-left">tora weather · NADOCast-first · local guidance viewer</span>
+        <span class="footer-right">Not an official NWS product. For research use only.</span>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>

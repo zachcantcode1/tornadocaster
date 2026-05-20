@@ -22,8 +22,9 @@ coverage.xml
 # Local cloned upstream repo cache
 nadocast_upstream/
 
-# Output images
+# Output images and generated cache
 *.png
+cache/
 
 # Training data and logs (large/generated)
 data/
