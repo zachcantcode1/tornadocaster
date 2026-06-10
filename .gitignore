@@ -25,6 +25,8 @@ nadocast_upstream/
 # Output images and generated cache
 *.png
 cache/
+autopost_outputs/
+.tornado_caster_post_state.json
 
 # Training data and logs (large/generated)
 data/

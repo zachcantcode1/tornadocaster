@@ -15,7 +15,8 @@ from pathlib import Path
 
 from src.analysis.probability import probability_summary
 from src.sources.nadocast import NadocastRequest, NadocastSource
-from src.visualization.plot_forecast import plot_conus_forecast
+from src.sources.spc_outlook import SpcOutlookSource
+from src.visualization.plot_forecast import plot_conus_forecast, plot_conus_spc_outlook
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -28,6 +29,27 @@ def _parse_date(value: str | None) -> date | None:
 
 
 async def run(args: argparse.Namespace) -> None:
+    if args.spc_day1 != "none":
+        spc_outlook = await SpcOutlookSource().fetch_day1(args.spc_day1)
+        print(f"SPC Day 1 source: {spc_outlook.url}")
+        print(
+            f"SPC Day 1: {spc_outlook.product_label}, "
+            f"valid={spc_outlook.valid_iso}, polygons={len(spc_outlook.polygons)}"
+        )
+        if args.summary_only:
+            return
+
+        output = Path(args.output)
+        plot_conus_spc_outlook(
+            spc_outlook,
+            title=f"SPC Day 1 {spc_outlook.product_label} Outlook",
+            subtitle=spc_outlook.valid_period_label,
+            output_path=str(output),
+            map_style=args.map_style,
+        )
+        print(f"Map saved to: {output.resolve()}")
+        return
+
     source = NadocastSource()
 
     request = NadocastRequest(
@@ -113,6 +135,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--summary-only",
         action="store_true",
         help="Decode and summarize the GRIB2 without rendering a map.",
+    )
+    parser.add_argument(
+        "--spc-day1",
+        default="none",
+        choices=("none", "cat", "tornado", "hail", "wind"),
+        help="Render the current official SPC Day 1 outlook product instead of NADOCast.",
     )
     parser.add_argument(
         "--search-days",

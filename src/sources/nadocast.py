@@ -5,9 +5,10 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass, replace
-from datetime import date, timedelta
+from datetime import date, datetime, time, timezone, timedelta
 from typing import Iterable
 from urllib.parse import unquote
+from zoneinfo import ZoneInfo
 
 import httpx
 import numpy as np
@@ -50,12 +51,12 @@ class NadocastGrid:
 
     @property
     def run_label(self) -> str:
-        cycle = "" if self.request.cycle is None else f" {self.request.cycle:02d}Z"
+        cycle = "" if self.request.cycle is None else f" | {_format_chicago_run_time(self.request.run_date, self.request.cycle)}"
         window = f" {self.request.window}" if self.request.window else ""
-        date_label = self.request.run_date.isoformat() if self.request.run_date else "unknown date"
+        date_label = "" if self.request.cycle is not None else f" | {self.request.run_date.isoformat() if self.request.run_date else 'unknown date'}"
         model = f"NADOCast {self.request.model_set}"
         calib = " abs_calib" if self.request.calibrated else ""
-        return f"{model}{calib} | {date_label}{cycle}{window}"
+        return f"{model}{calib}{date_label}{cycle}{window}"
 
     @property
     def hazard_label(self) -> str:
@@ -213,3 +214,11 @@ def _to_probability_fraction(values: np.ndarray, units: str) -> np.ndarray:
     if units == "%" or np.nanmax(arr) > 1.0:
         arr = arr / 100.0
     return np.clip(arr, 0.0, 1.0).astype(np.float32)
+
+
+def _format_chicago_run_time(run_date: date | None, cycle: int | None) -> str:
+    if run_date is None or cycle is None:
+        return ""
+    dt = datetime.combine(run_date, time(cycle), tzinfo=timezone.utc)
+    local = dt.astimezone(ZoneInfo("America/Chicago"))
+    return f"{local.strftime('%I').lstrip('0')}:{local:%M %p %Z %b} {local.day}"
