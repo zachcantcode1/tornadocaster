@@ -64,6 +64,7 @@ _SPC_PROBABILITY_LEGENDS = {
         ("TSTM", "#C1E9C1", "#55BB55"),
     ],
 }
+_CONUS_MAP_EXTENT = [-125, -66, 25, 50]
 
 
 def plot_conus_forecast(
@@ -91,7 +92,7 @@ def plot_conus_forecast(
 
     fig = plt.figure(figsize=(16, 9), dpi=dpi)
     ax = fig.add_subplot(1, 1, 1, projection=proj)
-    ax.set_extent([-125, -66, 22, 50], crs=data_crs)
+    ax.set_extent(_CONUS_MAP_EXTENT, crs=data_crs)
 
     ax.add_feature(cfeature.OCEAN.with_scale("50m"), facecolor=style["water"], zorder=0)
     ax.add_feature(cfeature.LAND.with_scale("50m"), facecolor=style["land"], zorder=0)
@@ -187,7 +188,7 @@ def plot_conus_spc_outlook(
 
     fig = plt.figure(figsize=(16, 9), dpi=dpi)
     ax = fig.add_subplot(1, 1, 1, projection=proj)
-    ax.set_extent([-125, -66, 22, 50], crs=data_crs)
+    ax.set_extent(_CONUS_MAP_EXTENT, crs=data_crs)
 
     ax.add_feature(cfeature.OCEAN.with_scale("50m"), facecolor=style["water"], zorder=0)
     ax.add_feature(cfeature.LAND.with_scale("50m"), facecolor=style["land"], zorder=0)
