@@ -336,7 +336,7 @@ def _draw_spc_legend(fig: plt.Figure, outlook: object, style: dict[str, str]) ->
     probability_entries = _spc_probability_legend_entries(product)
     has_intensity = _spc_product_has_intensity(product)
 
-    legend_ax = fig.add_axes([0.025, 0.605, 0.135, 0.325])
+    legend_ax = fig.add_axes([0.025, 0.555, 0.135, 0.325])
     legend_ax.set_axis_off()
     _draw_key_panel(legend_ax)
     row_y = 0.820
@@ -409,7 +409,7 @@ def _draw_legend_dashed_intensity(
 def _draw_nadocast_legend(fig: plt.Figure, style: dict[str, str], max_probability: float) -> None:
     """Draw a rounded full-scale NADOCast probability legend."""
     del max_probability, style
-    legend_ax = fig.add_axes([0.025, 0.635, 0.115, 0.295])
+    legend_ax = fig.add_axes([0.025, 0.585, 0.115, 0.295])
     legend_ax.set_axis_off()
     _draw_key_panel(legend_ax)
 
