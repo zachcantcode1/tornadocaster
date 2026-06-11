@@ -296,120 +296,52 @@ def _draw_spc_legend(fig: plt.Figure, outlook: object, style: dict[str, str]) ->
     probability_entries = _spc_probability_legend_entries(product)
     has_intensity = _spc_product_has_intensity(product)
 
-    legend_ax = fig.add_axes([0.025, 0.690, 0.135, 0.245])
+    legend_ax = fig.add_axes([0.025, 0.605, 0.135, 0.325])
     legend_ax.set_axis_off()
-    legend_ax.add_patch(
-        FancyBboxPatch(
-            (0.018, -0.018),
-            1.0,
-            1.0,
-            boxstyle="round,pad=0.024,rounding_size=0.085",
-            facecolor=(0.0, 0.0, 0.0, 0.28),
-            edgecolor="none",
-            clip_on=False,
-            zorder=0,
-        )
-    )
-    legend_ax.add_patch(
-        FancyBboxPatch(
-            (0.0, 0.0),
-            1.0,
-            1.0,
-            boxstyle="round,pad=0.024,rounding_size=0.085",
-            facecolor="#fbfbf7",
-            edgecolor="#d9ddd8",
-            linewidth=1.1,
-            clip_on=False,
-            zorder=1,
-        )
-    )
-    legend_ax.text(
-        0.5,
-        0.925,
-        getattr(outlook, "product_label", "Outlook"),
-        fontsize=8.8,
-        fontweight="bold",
-        ha="center",
-        va="center",
-        color="#151a1f",
-        zorder=2,
-    )
-    legend_ax.plot([0.09, 0.91], [0.865, 0.865], color="#d7dcd5", linewidth=0.9, zorder=2)
-    legend_ax.text(
-        0.08,
-        0.805,
-        "Probability",
-        fontsize=7.5,
-        fontweight="bold",
-        va="top",
-        color="#151a1f",
-        zorder=2,
-    )
-
-    for idx, (label, fill, stroke) in enumerate(probability_entries):
-        y = 0.715 - idx * 0.082
-        legend_ax.add_patch(
-            FancyBboxPatch(
-                (0.09, y - 0.030),
-                0.23,
-                0.060,
-                boxstyle="round,pad=0.006,rounding_size=0.012",
-                facecolor=fill,
-                edgecolor=stroke,
-                linewidth=0.8,
-                zorder=2,
-            )
-        )
-        legend_ax.text(
-            0.205,
-            y,
-            label,
-            fontsize=6.8,
-            fontweight="bold",
-            ha="center",
-            va="center",
-            color="#111111",
-            zorder=3,
-        )
-
+    _draw_key_panel(legend_ax)
+    row_y = 0.820
     if has_intensity:
-        legend_ax.text(
-            0.67,
-            0.645,
-            "Intensity",
-            fontsize=7.5,
-            fontweight="bold",
-            ha="center",
-            va="center",
-            color="#151a1f",
-            zorder=2,
-        )
         for idx, label in enumerate(("CIG3", "CIG2", "CIG1")):
-            y = 0.525 - idx * 0.142
+            y = row_y - idx * 0.073
             sample = FancyBboxPatch(
-                (0.55, y - 0.048),
-                0.22,
-                0.096,
+                (0.075, y - 0.025),
+                0.070,
+                0.050,
                 boxstyle="round,pad=0.004,rounding_size=0.010",
                 facecolor="#ffffff",
-                edgecolor="#111111",
-                linewidth=0.8,
+                edgecolor="#2b3440",
+                linewidth=0.75,
                 hatch="" if label == "CIG1" else _spc_intensity_hatch(label),
                 zorder=2,
             )
             legend_ax.add_patch(sample)
             if label == "CIG1":
-                _draw_legend_dashed_intensity(legend_ax, sample, 0.55, y - 0.048, 0.22, 0.096)
+                _draw_legend_dashed_intensity(legend_ax, sample, 0.075, y - 0.025, 0.070, 0.050)
             legend_ax.text(
-                0.84,
+                0.205,
                 y,
-                label.replace("CIG", ""),
-                fontsize=9,
+                f"Intensity {label.replace('CIG', '')}",
+                fontsize=8.2,
                 fontweight="bold",
                 va="center",
-                color="#111111",
+                color="#e7ebf0",
                 zorder=3,
             )
+        row_y -= 0.255
+
+    for idx, (label, fill, stroke) in enumerate(probability_entries):
+        y = row_y - idx * 0.073
+        _draw_key_swatch(legend_ax, 0.075, y, fill, stroke)
+        legend_ax.text(
+            0.205,
+            y,
+            label,
+            fontsize=8.2,
+            fontweight="bold",
+            va="center",
+            color="#e7ebf0",
+            zorder=3,
+        )
 
 
 def _draw_legend_dashed_intensity(
@@ -437,15 +369,33 @@ def _draw_legend_dashed_intensity(
 def _draw_nadocast_legend(fig: plt.Figure, style: dict[str, str], max_probability: float) -> None:
     """Draw a rounded full-scale NADOCast probability legend."""
     del max_probability, style
-    legend_ax = fig.add_axes([0.025, 0.690, 0.105, 0.245])
+    legend_ax = fig.add_axes([0.025, 0.635, 0.115, 0.295])
     legend_ax.set_axis_off()
+    _draw_key_panel(legend_ax)
+
+    for idx, (label, color) in enumerate(reversed(list(zip(_LEGEND_LABELS, _PROB_COLORS)))):
+        y = 0.795 - idx * 0.073
+        _draw_key_swatch(legend_ax, 0.085, y, color, "#2b3440")
+        legend_ax.text(
+            0.230,
+            y,
+            label,
+            fontsize=8.2,
+            fontweight="bold",
+            va="center",
+            color="#e7ebf0",
+            zorder=3,
+        )
+
+
+def _draw_key_panel(legend_ax: plt.Axes) -> None:
     legend_ax.add_patch(
         FancyBboxPatch(
             (0.018, -0.018),
             1.0,
             1.0,
-            boxstyle="round,pad=0.024,rounding_size=0.085",
-            facecolor=(0.0, 0.0, 0.0, 0.28),
+            boxstyle="round,pad=0.026,rounding_size=0.045",
+            facecolor=(0.0, 0.0, 0.0, 0.30),
             edgecolor="none",
             clip_on=False,
             zorder=0,
@@ -456,63 +406,45 @@ def _draw_nadocast_legend(fig: plt.Figure, style: dict[str, str], max_probabilit
             (0.0, 0.0),
             1.0,
             1.0,
-            boxstyle="round,pad=0.024,rounding_size=0.085",
-            facecolor="#fbfbf7",
-            edgecolor="#d9ddd8",
-            linewidth=1.1,
+            boxstyle="round,pad=0.026,rounding_size=0.045",
+            facecolor="#070c14",
+            edgecolor="#172232",
+            linewidth=0.85,
             clip_on=False,
             zorder=1,
         )
     )
     legend_ax.text(
-        0.5,
-        0.925,
-        "NADOCast",
-        fontsize=8.8,
+        0.075,
+        0.930,
+        "KEY",
+        fontsize=7.6,
         fontweight="bold",
-        ha="center",
         va="center",
-        color="#151a1f",
-        zorder=2,
-    )
-    legend_ax.plot([0.09, 0.91], [0.865, 0.865], color="#d7dcd5", linewidth=0.9, zorder=2)
-    legend_ax.text(
-        0.5,
-        0.805,
-        "Probability",
-        fontsize=7.5,
-        fontweight="bold",
-        va="top",
-        ha="center",
-        color="#151a1f",
+        color="#7f8b98",
         zorder=2,
     )
 
-    for idx, (label, color) in enumerate(reversed(list(zip(_LEGEND_LABELS, _PROB_COLORS)))):
-        y = 0.700 - idx * 0.073
-        legend_ax.add_patch(
-            FancyBboxPatch(
-                (0.31, y - 0.024),
-                0.38,
-                0.048,
-                boxstyle="round,pad=0.006,rounding_size=0.012",
-                facecolor=color,
-                edgecolor="#2b2f33",
-                linewidth=0.7,
-                zorder=2,
-            )
+
+def _draw_key_swatch(
+    legend_ax: plt.Axes,
+    x: float,
+    y: float,
+    fill: str,
+    stroke: str,
+) -> None:
+    legend_ax.add_patch(
+        FancyBboxPatch(
+            (x, y - 0.025),
+            0.070,
+            0.050,
+            boxstyle="round,pad=0.004,rounding_size=0.010",
+            facecolor=fill,
+            edgecolor=stroke,
+            linewidth=0.75,
+            zorder=2,
         )
-        legend_ax.text(
-            0.50,
-            y,
-            label,
-            fontsize=6.6,
-            fontweight="bold",
-            ha="center",
-            va="center",
-            color="#111111",
-            zorder=3,
-        )
+    )
 
 
 def _legend_entries(max_probability: float) -> tuple[list[str], list[str]]:
