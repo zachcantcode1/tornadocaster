@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -12,7 +14,7 @@ import matplotlib.pyplot as plt
 from cartopy.mpl.path import shapely_to_path
 from matplotlib.collections import LineCollection
 from matplotlib.colors import to_rgba
-from matplotlib.patches import FancyBboxPatch, PathPatch
+from matplotlib.patches import FancyBboxPatch, PathPatch, Rectangle
 import numpy as np
 from shapely.geometry.base import BaseGeometry
 
@@ -160,11 +162,9 @@ def plot_conus_forecast(
 
     _draw_nadocast_legend(fig, style, float(np.nanmax(probability)))
 
-    ax.set_title(title, fontsize=13, fontweight="bold", loc="left", pad=6, color=style["title"])
-    ax.set_title(subtitle, fontsize=9, fontweight="normal", loc="right", pad=6, color=style["subtitle"])
-
     fig.patch.set_facecolor(style["figure"])
     ax.set_facecolor(style["water"])
+    _draw_title_bar(fig, title, subtitle, style)
 
     plt.tight_layout(pad=0.5)
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight", facecolor=fig.get_facecolor())
@@ -208,11 +208,9 @@ def plot_conus_spc_outlook(
 
     _draw_spc_legend(fig, outlook, style)
 
-    ax.set_title(title, fontsize=13, fontweight="bold", loc="left", pad=6, color=style["title"])
-    ax.set_title(subtitle, fontsize=9, fontweight="normal", loc="right", pad=6, color=style["subtitle"])
-
     fig.patch.set_facecolor(style["figure"])
     ax.set_facecolor(style["water"])
+    _draw_title_bar(fig, title, subtitle, style)
 
     plt.tight_layout(pad=0.5)
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight", facecolor=fig.get_facecolor())
@@ -263,6 +261,48 @@ def _draw_spc_outlook(
             linewidth=1.15,
             zorder=5,
         )
+
+
+def _draw_title_bar(fig: plt.Figure, title: str, subtitle: str, style: dict[str, str]) -> None:
+    generated = datetime.now(ZoneInfo("America/Chicago"))
+    metadata = f"{generated:%A, %B} {generated.day}, {generated:%Y}"
+    if subtitle:
+        metadata = f"{metadata} | {subtitle}"
+
+    fig.patches.append(
+        Rectangle(
+            (0.0, 0.925),
+            1.0,
+            0.075,
+            transform=fig.transFigure,
+            facecolor="#080b10",
+            edgecolor="none",
+            alpha=0.93,
+            zorder=20,
+        )
+    )
+    fig.text(
+        0.012,
+        0.980,
+        title.upper(),
+        fontsize=17,
+        fontweight="heavy",
+        ha="left",
+        va="top",
+        color=style["title"],
+        zorder=21,
+    )
+    fig.text(
+        0.012,
+        0.944,
+        metadata,
+        fontsize=8.8,
+        fontweight="medium",
+        ha="left",
+        va="top",
+        color="#8f99a5",
+        zorder=21,
+    )
 
 
 def _draw_dashed_intensity(ax: plt.Axes, geometry: BaseGeometry, data_crs: ccrs.CRS) -> None:
